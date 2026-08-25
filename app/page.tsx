@@ -15,7 +15,7 @@ import { sliceMesh, type SliceResult } from "@/lib/slice";
 import { buildPm7 } from "@/lib/pm7";
 
 function downloadBytes(bytes: Uint8Array, name: string) {
-  const blob = new Blob([bytes], { type: "application/octet-stream" });
+  const blob = new Blob([bytes as BlobPart], { type: "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
