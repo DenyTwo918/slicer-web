@@ -1,12 +1,6 @@
-"use client";
+﻿"use client";
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type DragEvent,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Viewport from "@/components/Viewport";
 import { parseStl, type StlMesh } from "@/lib/stl";
 import { makeTorus } from "@/lib/demo";
@@ -16,8 +10,10 @@ export default function Home() {
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const [webglOk, setWebglOk] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     try {
@@ -28,6 +24,15 @@ export default function Home() {
     }
   }, []);
 
+  const clearToast = () => {
+    if (toastTimer.current) {
+      clearTimeout(toastTimer.current);
+      toastTimer.current = null;
+    }
+    setFileName("");
+    setError("");
+  };
+
   const loadFile = useCallback(async (file: File) => {
     setError("");
     setLoading(true);
@@ -36,12 +41,12 @@ export default function Home() {
       const m = parseStl(buf);
       setMesh(m);
       setFileName(file.name);
+      toastTimer.current = setTimeout(clearToast, 6000);
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Nepodařilo se načíst soubor."
-      );
+      setError(e instanceof Error ? e.message : "NepodaĹ™ilo se naÄŤĂ­st soubor.");
       setMesh(null);
       setFileName("");
+      toastTimer.current = setTimeout(clearToast, 8000);
     } finally {
       setLoading(false);
     }
@@ -51,16 +56,31 @@ export default function Home() {
     setError("");
     setMesh(makeTorus());
     setFileName("demo model (donut)");
+    toastTimer.current = setTimeout(clearToast, 6000);
   }, []);
 
-  const onDrop = useCallback(
-    (e: DragEvent<HTMLDivElement>) => {
+  // drag & drop kamkoli na strĂˇnku
+  useEffect(() => {
+    const onDragOver = (e: DragEvent) => {
       e.preventDefault();
-      const f = e.dataTransfer.files?.[0];
+      setDragOver(true);
+    };
+    const onDragLeave = () => setDragOver(false);
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      const f = e.dataTransfer?.files?.[0];
       if (f) loadFile(f);
-    },
-    [loadFile]
-  );
+    };
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, [loadFile]);
 
   const pick = () => fileRef.current?.click();
 
@@ -70,114 +90,63 @@ export default function Home() {
         <div className="logo">
           slicer<span className="dot">.</span>
         </div>
-        <div className="steps">
-          <div className="step-dot active">
-            <span>1</span> Vlož model
-          </div>
-          <div className="step-dot">
-            <span>2</span> Připrav
-          </div>
-          <div className="step-dot">
-            <span>3</span> Zkontroluj
-          </div>
-          <div className="step-dot">
-            <span>4</span> Tiskni
-          </div>
+        <div className="actions">
+          <button className="btn btn-small btn-primary" onClick={pick}>
+            Vyber modelâ€¦
+          </button>
+          <button className="btn btn-small btn-ghost" onClick={loadDemo}>
+            Demo
+          </button>
         </div>
       </header>
 
-      <main>
-        <div className="card">
-          <h1>Vlož model</h1>
-          <p className="sub">
-            Model je soubor s tvojí věcí, kterou chceš vytisknout.
-          </p>
-
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".stl,.obj,.3mf"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) loadFile(f);
-              e.target.value = "";
-            }}
-          />
-
-          {!mesh && (
-            <>
-              <div
-                className="dropzone"
-                onClick={pick}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={onDrop}
-              >
-                <div className="big">Sem přetáhni svůj model</div>
-                <div className="hint">
-                  nebo klikni a vyber soubor (STL, OBJ, 3MF)
-                </div>
-              </div>
-              <div className="demo-row">
-                <span>Nemáš model? Vyzkoušej demo:</span>
-                <button className="btn btn-ghost" onClick={loadDemo}>
-                  Vyzkoušej demo model — bez souboru
-                </button>
-              </div>
-            </>
-          )}
-
-          {loading && <div className="status show">Načítám model…</div>}
-          {error && <div className="error show">{error}</div>}
-          {mesh && !webglOk && (
-            <div className="warn show">
-              Tento prohlížeč nepodporuje 3D (WebGL). Zkus prosím Chrome nebo
-              Edge — model ale můžeš i tak nahrát.
-            </div>
-          )}
-
-          {mesh && (
-            <>
-              <div className="status show">
-                Model načten ✓ · {fileName} ·{" "}
-                {mesh.triangleCount.toLocaleString("cs-CZ")} trojúhelníků
-              </div>
-              <div className="viewport">
-                <Viewport mesh={mesh} />
-              </div>
-              <p className="hint3d">
-                Táhni myší: otáčení · kolečko: přiblížení · pravé tlačítko:
-                posun
-              </p>
-            </>
-          )}
-
-          <div className="btn-row">
-            {mesh ? (
-              <button
-                className="btn btn-primary"
-                disabled
-                title="Další kroky brzy přijdou"
-              >
-                Pokračovat →
-              </button>
-            ) : (
-              <button className="btn btn-primary" onClick={pick}>
-                Vyber model
-              </button>
-            )}
-          </div>
-
-          <details className="helpbox">
-            <summary>Potřebuješ pomoc?</summary>
-            <div className="body">
-              Soubor s modelem najdeš na ploše nebo ve složce Stažené soubory.
-              Většinou končí na .stl. Nemáš model? Stačí kliknout na tlačítko
-              „Vyzkoušej demo model".
-            </div>
-          </details>
+      <div className="workspace">
+        <div className="viewport">
+          <Viewport mesh={mesh} />
         </div>
-      </main>
+
+        {!mesh && !loading && (
+          <div
+            className={`drop-hint ${dragOver ? "dragging" : ""}`}
+            onClick={pick}
+          >
+            <div className="drop-big">PĹ™etĂˇhni svĹŻj STL sem</div>
+            <div className="drop-small">
+              â€¦nebo klikni na â€žVyber model" Â· nemĂˇĹˇ model? Klikni na â€žDemo"
+            </div>
+            <div className="drop-note">
+              STEP soubory zatĂ­m neumĂ­me â€” pĹ™eveÄŹ si model do STL (napĹ™. ve
+              FreeCAD / Fusion 360) a pĹ™etĂˇhni ho sem
+            </div>
+          </div>
+        )}
+
+        {loading && <div className="toast toast-info">NaÄŤĂ­tĂˇm modelâ€¦</div>}
+        {fileName && !error && (
+          <div className="toast toast-ok">
+            Model naÄŤten âś“ Â· {fileName} Â·{" "}
+            {mesh?.triangleCount.toLocaleString("cs-CZ")} trojĂşhelnĂ­kĹŻ
+          </div>
+        )}
+        {error && <div className="toast toast-err">{error}</div>}
+        {mesh && !webglOk && (
+          <div className="toast toast-warn">
+            Tento prohlĂ­ĹľeÄŤ nepodporuje 3D (WebGL) â€” zkus Chrome nebo Edge.
+          </div>
+        )}
+      </div>
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".stl"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) loadFile(f);
+          e.target.value = "";
+        }}
+      />
     </div>
   );
 }

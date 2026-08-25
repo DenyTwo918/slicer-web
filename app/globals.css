@@ -8,7 +8,7 @@
   --muted: #6b7280;
   --border: #d8dee6;
   --danger: #dc2626;
-  --radius: 16px;
+  --radius: 14px;
 }
 
 * {
@@ -19,6 +19,7 @@
 
 html,
 body {
+  height: 100%;
   max-width: 100vw;
   overflow-x: hidden;
 }
@@ -32,21 +33,22 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+/* ---------- layout: hlavička + 3D workspace ---------- */
+.page {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
-/* ---------- hlavička ---------- */
 header {
   background: var(--card);
   border-bottom: 1px solid var(--border);
-  padding: 14px 24px;
+  padding: 12px 20px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .logo {
   font-size: 22px;
@@ -56,84 +58,30 @@ header {
 .logo .dot {
   color: var(--blue);
 }
-.steps {
+.actions {
   display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-.step-dot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: #eef1f5;
-  color: var(--muted);
-  border-radius: 999px;
-  padding: 8px 16px;
-  font-weight: 700;
-  font-size: 15px;
-}
-.step-dot.active {
-  background: var(--blue);
-  color: #fff;
+  gap: 10px;
 }
 
-/* ---------- obsah ---------- */
-main {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 28px 20px 80px;
+/* ---------- 3D workspace ---------- */
+.workspace {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(160deg, #eef2ff, #e0e7ff);
 }
-.card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 28px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
-}
-h1 {
-  font-size: 30px;
-  margin-bottom: 8px;
-}
-.sub {
-  color: var(--muted);
-  font-size: 18px;
-  margin-bottom: 24px;
-}
-
-/* ---------- drop zóna ---------- */
-.dropzone {
-  border: 3px dashed var(--blue);
-  border-radius: var(--radius);
-  background: #f0f5ff;
-  padding: 56px 24px;
-  text-align: center;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.dropzone:hover {
-  background: #e3edff;
-}
-.dropzone .big {
-  font-size: 24px;
-  font-weight: 700;
-}
-.dropzone .hint {
-  color: var(--muted);
-  margin-top: 8px;
-  font-size: 16px;
+.viewport {
+  position: absolute;
+  inset: 0;
 }
 
 /* ---------- tlačítka ---------- */
 .btn {
   display: inline-block;
   border: none;
-  border-radius: 14px;
+  border-radius: 12px;
   cursor: pointer;
-  font-size: 20px;
   font-weight: 700;
-  padding: 18px 32px;
-  min-height: 56px;
   transition: background 0.15s, transform 0.05s;
 }
 .btn:focus-visible {
@@ -143,16 +91,17 @@ h1 {
 .btn:active {
   transform: translateY(1px);
 }
+.btn-small {
+  font-size: 16px;
+  padding: 10px 20px;
+  min-height: 44px;
+}
 .btn-primary {
   background: var(--blue);
   color: #fff;
 }
 .btn-primary:hover {
   background: var(--blue-dark);
-}
-.btn-primary:disabled {
-  background: #a5c1f5;
-  cursor: not-allowed;
 }
 .btn-ghost {
   background: #eef1f5;
@@ -161,104 +110,77 @@ h1 {
 .btn-ghost:hover {
   background: #e2e6ec;
 }
-.btn-row {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-top: 24px;
-}
 
-/* ---------- demo model ---------- */
-.demo-row {
+/* ---------- nápověda k přetažení ---------- */
+.drop-hint {
+  position: absolute;
+  inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin-top: 18px;
-  color: var(--muted);
-  font-size: 16px;
+  gap: 8px;
+  text-align: center;
+  border: 3px dashed var(--blue);
+  background: rgba(240, 245, 255, 0.85);
+  cursor: pointer;
+  z-index: 5;
+  transition: background 0.2s, border-color 0.2s;
 }
-.demo-row .btn {
-  padding: 12px 22px;
-  min-height: 48px;
-  font-size: 17px;
+.drop-hint:hover {
+  background: rgba(227, 237, 255, 0.9);
+}
+.drop-hint.dragging {
+  border-color: var(--green);
+  background: rgba(220, 252, 231, 0.92);
+}
+.drop-big {
+  font-size: 30px;
+  font-weight: 800;
+}
+.drop-small {
+  color: var(--muted);
+  font-size: 18px;
+}
+.drop-note {
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: 14px;
+  max-width: 520px;
 }
 
-/* ---------- stav / chyba ---------- */
-.status {
-  margin-top: 20px;
-  padding: 16px 20px;
+/* ---------- toast (zprávy) ---------- */
+.toast {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 12px 22px;
   border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  max-width: 90%;
+  text-align: center;
+}
+.toast-ok {
   background: #f0fdf4;
   border: 2px solid #bbf7d0;
   color: var(--green);
-  font-size: 19px;
-  font-weight: 700;
-  display: none;
 }
-.status.show {
-  display: block;
-}
-.error {
-  margin-top: 20px;
-  padding: 16px 20px;
-  border-radius: 12px;
+.toast-err {
   background: #fef2f2;
   border: 2px solid #fecaca;
   color: var(--danger);
-  font-size: 17px;
-  display: none;
 }
-.error.show {
-  display: block;
-}
-.warn {
-  margin-top: 20px;
-  padding: 16px 20px;
-  border-radius: 12px;
+.toast-warn {
   background: #fffbeb;
   border: 2px solid #fde68a;
   color: #92400e;
-  font-size: 17px;
-  display: none;
 }
-.warn.show {
-  display: block;
-}
-
-/* ---------- 3D náhled ---------- */
-.viewport {
-  margin-top: 18px;
-  height: 440px;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  overflow: hidden;
-  background: linear-gradient(160deg, #eef2ff, #e0e7ff);
-}
-.hint3d {
-  margin-top: 10px;
-  color: var(--muted);
-  font-size: 15px;
-  text-align: center;
-}
-
-/* ---------- nápověda ---------- */
-details.helpbox {
-  margin-top: 20px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: #fff;
-  padding: 14px 18px;
-}
-details.helpbox summary {
-  cursor: pointer;
-  font-weight: 700;
-  font-size: 17px;
-  color: var(--blue);
-}
-details.helpbox .body {
-  margin-top: 10px;
-  color: var(--muted);
-  font-size: 16px;
+.toast-info {
+  background: #eff6ff;
+  border: 2px solid #bfdbfe;
+  color: #1e40af;
 }
