@@ -147,6 +147,7 @@ export default function Home() {
   const [exporting, setExporting] = useState(false);
   const [sending, setSending] = useState(false);
   const [lastExport, setLastExport] = useState<{ bytes: Uint8Array; name: string } | null>(null);
+  const [exportName, setExportName] = useState("tisk");
   const [showInfo, setShowInfo] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -469,15 +470,21 @@ export default function Home() {
           zupSpeedBottom: settings.zupSpeedBottom,
         }
       );
-      downloadBytes(bytes, `tisk.${printer.keySuffix}`);
-      setLastExport({ bytes, name: `tisk.${printer.keySuffix}` });
+      downloadBytes(bytes, `${exportName}.${printer.keySuffix}`);
+      setLastExport({ bytes, name: `${exportName}.${printer.keySuffix}` });
       showToast("ok", "Soubor .pm7 stažen ✓ · USB: kořen disku, ≤15 znaků, FAT32", 10000);
     } catch (e) {
       showToast("err", e instanceof Error ? e.message : "Export .pm7 selhal.", 8000);
     } finally {
       setExporting(false);
     }
-  }, [sliceResult, models, settings, printer]);
+  }, [sliceResult, models, settings, printer, exportName]);
+
+  const centerSel = useCallback(() => {
+    if (!selectedId) return;
+    updateModel(selectedId, (m) => ({ ...m, transform: { ...m.transform, x: 0, y: 0 } }));
+    showToast("ok", "Model vycentrován ✓");
+  }, [selectedId, updateModel]);
 
   const sendToPrinter = useCallback(async () => {
     if (!lastExport) return;
@@ -534,6 +541,24 @@ export default function Home() {
   };
   const fmtCost = (ml: number) =>
     `$${(((ml * (resin.price ?? 220)) / 1000)).toFixed(2)}`;
+
+  // klávesové zkratky
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      const k = e.key.toLowerCase();
+      if (k === "o") orientSel();
+      else if (k === "s") doSlice();
+      else if (k === "e") exportPm7();
+      else if (k === "d") duplicateSel();
+      else if (k === "c") centerSel();
+      else if (k === "r") resetSel();
+      else if (k === "p") sendToPrinter();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [orientSel, doSlice, exportPm7, duplicateSel, centerSel, resetSel, sendToPrinter]);
 
   return (
     <div className="page">
@@ -626,6 +651,9 @@ export default function Home() {
             <button className="btn btn-small btn-ghost" onClick={duplicateSel} disabled={!selected}>
               Duplikovat
             </button>
+            <button className="btn btn-small btn-ghost" onClick={centerSel} disabled={!selected}>
+              Centrovat
+            </button>
             <button className="btn btn-small btn-ghost" onClick={downloadSelStl} disabled={!selected}>
               STL
             </button>
@@ -697,6 +725,17 @@ export default function Home() {
               </select>
             </label>
             <p className="info-note">Poslední volba se pamatuje i po zavření stránky.</p>
+            <label className="set-row">
+              <span>Název tisku</span>
+              <input
+                type="text"
+                maxLength={12}
+                value={exportName}
+                onChange={(e) =>
+                  setExportName(e.target.value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12))
+                }
+              />
+            </label>
             <label className="set-row">
               <span>Výška vrstvy</span>
               <select
@@ -866,118 +905,9 @@ export default function Home() {
                 onChange={(e) => setSettings((s) => ({ ...s, zupSpeedBottom: Number(e.target.value) }))}
               />
             </label>
-            <label className="set-row check">
-              <input
-                type="checkbox"
-                checked={settings.hollow}
-                onChange={(e) => setSettings((s) => ({ ...s, hollow: e.target.checked }))}
-              />
-              <span>Hollowing (dutý model)</span>
-            </label>
-            {settings.hollow && (
-              <>
-                <label className="set-row">
-                  <span>Stěna (mm)</span>
-                  <input
-                    type="number"
-                    step={0.5}
-                    min={0.5}
-                    value={settings.wallMm}
-                    onChange={(e) => setSettings((s) => ({ ...s, wallMm: Number(e.target.value) }))}
-                  />
-                </label>
-                <label className="set-row">
-                  <span>Otvory Ø (mm)</span>
-                  <input
-                    type="number"
-                    step={0.5}
-                    min={1}
-                    value={settings.holeDiaMm}
-                    onChange={(e) => setSettings((s) => ({ ...s, holeDiaMm: Number(e.target.value) }))}
-                  />
-                </label>
-                <label className="set-row check">
-                  <input
-                    type="checkbox"
-                    checked={settings.drainHoles}
-                    onChange={(e) => setSettings((s) => ({ ...s, drainHoles: e.target.checked }))}
-                  />
-                  <span>Odvodňovací otvory</span>
-                </label>
-              </>
-            )}
-            <label className="set-row check">
-              <input
-                type="checkbox"
-                checked={settings.raft}
-                onChange={(e) => setSettings((s) => ({ ...s, raft: e.target.checked }))}
-              />
-              <span>Raft (základna)</span>
-            </label>
-            {settings.raft && (
-              <>
-                <label className="set-row">
-                  <span>Raft vrstvy</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={settings.raftLayers}
-                    onChange={(e) => setSettings((s) => ({ ...s, raftLayers: Number(e.target.value) }))}
-                  />
-                </label>
-                <label className="set-row">
-                  <span>Raft přesah (mm)</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={settings.raftMarginMm}
-                    onChange={(e) => setSettings((s) => ({ ...s, raftMarginMm: Number(e.target.value) }))}
-                  />
-                </label>
-              </>
-            )}
-            <label className="set-row">
-              <span>Zvednutí (mm)</span>
-              <input
-                type="number"
-                step={0.1}
-                min={0.1}
-                value={settings.zupHeight}
-                onChange={(e) => setSettings((s) => ({ ...s, zupHeight: Number(e.target.value) }))}
-              />
-            </label>
-            <label className="set-row">
-              <span>Rychlost zvedání</span>
-              <input
-                type="number"
-                step={0.5}
-                min={0.5}
-                value={settings.zupSpeed}
-                onChange={(e) => setSettings((s) => ({ ...s, zupSpeed: Number(e.target.value) }))}
-              />
-            </label>
-            <label className="set-row">
-              <span>Zvednutí 1. vrstev</span>
-              <input
-                type="number"
-                step={0.1}
-                min={0.1}
-                value={settings.zupHeightBottom}
-                onChange={(e) => setSettings((s) => ({ ...s, zupHeightBottom: Number(e.target.value) }))}
-              />
-            </label>
-            <label className="set-row">
-              <span>Rychlost 1. vrstev</span>
-              <input
-                type="number"
-                step={0.1}
-                min={0.1}
-                value={settings.zupSpeedBottom}
-                onChange={(e) => setSettings((s) => ({ ...s, zupSpeedBottom: Number(e.target.value) }))}
-              />
-            </label>
+            <p className="info-note">
+              Zkratky: O narovnej · S slicuj · E export · P poslat · D duplikovat · C centrovat · R vrátit
+            </p>
           </div>
         )}
 
