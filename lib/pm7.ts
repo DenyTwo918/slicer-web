@@ -1,6 +1,7 @@
 import { zipSync, strToU8 } from "fflate";
 import type { SliceResult } from "./slice";
 import type { StlMesh } from "./stl";
+import { totalVolume, unionBounds } from "./transform";
 
 /**
  * Export .pm7 pro Anycubic Photon Mono M7.
@@ -345,13 +346,14 @@ async function makePreviewPng(
   if (!ctx) throw new Error("Canvas 2D není dostupné.");
   ctx.fillStyle = "#052636";
   ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = "#ffffff";
   const sx = w / slice.resolutionX;
   const sy = h / slice.resolutionY;
   const src = layer.data;
   for (let y = 0; y < slice.resolutionY; y++) {
     for (let x = 0; x < slice.resolutionX; x++) {
-      if (src[y * slice.resolutionX + x]) {
+      const v = src[y * slice.resolutionX + x];
+      if (v > 0) {
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
         ctx.fillRect(x * sx, y * sy, sx + 1, sy + 1);
       }
     }
@@ -376,11 +378,11 @@ export interface Pm7Options {
 }
 
 /**
- * Sestaví kompletní .pm7 soubor (Uint8Array) z mesh a slice výsledku.
+ * Sestaví kompletní .pm7 soubor (Uint8Array) z meshes a slice výsledku.
  * Vrstvy se up-scalují do plného rozlišení M7 (13312×5120) a kódují RLE4.
  */
 export async function buildPm7(
-  mesh: StlMesh,
+  meshes: StlMesh[],
   slice: SliceResult,
   opts: Pm7Options = {}
 ): Promise<Uint8Array> {
@@ -433,22 +435,7 @@ export async function buildPm7(
     makePreviewPng(slice, Math.max(1, mid), 224, 168),
   ]);
 
-  const volumeMl = (() => {
-    // objem mesh (mm3) -> ml
-    let vol = 0;
-    const p = mesh.positions;
-    for (let t = 0; t < mesh.triangleCount; t++) {
-      const o = t * 9;
-      const v0 = [p[o], p[o + 1], p[o + 2]];
-      const v1 = [p[o + 3], p[o + 4], p[o + 5]];
-      const v2 = [p[o + 6], p[o + 7], p[o + 8]];
-      const cx = v0[1] * v1[2] - v0[2] * v1[1];
-      const cy = v0[2] * v1[0] - v0[0] * v1[2];
-      const cz = v0[0] * v1[1] - v0[1] * v1[0];
-      vol += v0[0] * cx + v0[1] * cy + v0[2] * cz;
-    }
-    return Math.abs(vol) / 6 / 1000;
-  })();
+  const volumeMl = totalVolume(meshes) / 1000;
 
   const printTimeS = Math.round(
     slice.layers.length * 10 // hrubý odhad ~10 s na vrstvu
@@ -473,7 +460,7 @@ export async function buildPm7(
     ),
     "scene.slice": encodeSceneSlice({
       layerCount: slice.layers.length,
-      bounds: mesh.bounds,
+      bounds: unionBounds(meshes),
       layers: layerInfo,
     }),
     "preview_images/preview_0.png": preview0,

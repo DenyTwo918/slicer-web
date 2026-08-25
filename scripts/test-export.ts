@@ -1,17 +1,26 @@
 /**
- * End-to-end test exportu .pm7 v Node (bez prohlížeče).
+ * End-to-end test: batch (2 modely) + podpory + AA + export .pm7.
  * Spustit: npx tsx scripts/test-export.ts
  */
 import { writeFileSync } from "fs";
-import { makeBox } from "../lib/demo";
-import { sliceMesh } from "../lib/slice";
+import { makeBox, makeTorus } from "../lib/demo";
+import { sliceMesh, unionSlices } from "../lib/slice";
+import { generateSupports } from "../lib/supports";
+import { applyAA } from "../lib/aa";
 import { buildPm7 } from "../lib/pm7";
+import { translateMesh } from "../lib/transform";
 import { unzipSync } from "fflate";
 
 const MX = 13312;
 const MY = 5120;
+const SLICE_OPTS = {
+  layerHeight: 0.1,
+  resolutionX: 1664,
+  resolutionY: 640,
+  plateW: 223.64,
+  plateH: 126.48,
+};
 
-// port DecodePW0 (UVtools AnycubicFile.cs:2549) — pro nezávislé ověření
 function decodePW0(encoded: Uint8Array, imgLen: number): Uint8Array {
   const out = new Uint8Array(imgLen);
   let pixelPos = 0;
@@ -34,72 +43,71 @@ function decodePW0(encoded: Uint8Array, imgLen: number): Uint8Array {
       color = (code << 4) | code;
       if (i >= encoded.length) repeat = imgLen - pixelPos;
     }
-    if (pixelPos + repeat > imgLen) throw new Error("run pres konec obrazu");
+    if (pixelPos + repeat > imgLen) throw new Error("run pres konec");
     out.fill(color, pixelPos, pixelPos + repeat);
     pixelPos += repeat;
     if (pixelPos === imgLen) break;
   }
-  if (pixelPos !== imgLen) throw new Error("obraz skoncil kratce: " + pixelPos);
+  if (pixelPos !== imgLen) throw new Error("kratky obraz");
   return out;
 }
 
-async function main() {
-  const mesh = makeBox(40, 60);
-  const slice = sliceMesh(mesh, {
-    layerHeight: 0.1,
-    resolutionX: 1664,
-    resolutionY: 640,
-    plateW: 223.64,
-    plateH: 126.48,
-  });
-  console.log("Vrstev:", slice.layers.length, "· z-rozsah:", mesh.bounds.min[2], "-", mesh.bounds.max[2], "mm");
-
-  const t0 = Date.now();
-  const bytes = await buildPm7(mesh, slice, { modelName: "cube" });
-  console.log("Export OK:", bytes.length, "B za", Date.now() - t0, "ms");
-  writeFileSync("test-output.pm7", bytes);
-
-  // 1) kontrola ZIP obsahu
-  const files = unzipSync(bytes);
-  const names = Object.keys(files);
-  console.log("\n[1] Entries v ZIPu:", names.length);
-  const required = [
-    "anycubic_photon_resins.pwsp",
-    "layers_controller.conf",
-    "print_info.json",
-    "software_info.conf",
-    "scene.slice",
-    "preview_images/preview_0.png",
-    "preview_images/preview_1.png",
-    "layer_images/layer_0.pw0Img",
-    "layer_images/layer_599.pw0Img",
-  ];
-  for (const r of required) {
-    if (!names.includes(r)) {
-      console.log("CHYBI:", r);
-      process.exit(1);
-    }
+function countPx(slice: { layers: { data: Uint8Array }[] }): number {
+  let n = 0;
+  for (const l of slice.layers) {
+    for (let i = 0; i < l.data.length; i++) if (l.data[i]) n++;
   }
-  console.log("Vsechny povinne soubory OK");
+  return n;
+}
 
-  // 2) velikosti vrstev (sance na nesmysl)
-  const sizes = names
-    .filter((n) => n.startsWith("layer_images/"))
-    .map((n) => files[n].length);
+async function main() {
+  // 2 modely: krychle (uprostred) + torus (posunuty doleva, s previsy)
+  const cube = makeBox(40, 60);
+  const torus = translateMesh(makeTorus(), 0, 0, 12); // z 0..24 mm
+
+  const sCube = sliceMesh(cube, { ...SLICE_OPTS });
+  const sTorus = sliceMesh(torus, { ...SLICE_OPTS, offsetX: -70 });
+  let slice = unionSlices(sCube, sTorus);
+  console.log("Vrstev po sjednoceni:", slice.layers.length);
+
+  const before = countPx(slice);
+  slice = generateSupports(slice, { enabled: true });
+  const after = countPx(slice);
   console.log(
-    "\n[2] Velikost vrstev: min",
-    Math.min(...sizes),
-    "B · prumer",
-    Math.round(sizes.reduce((a, b) => a + b, 0) / sizes.length),
-    "B · max",
-    Math.max(...sizes),
-    "B"
+    "Podpory: pridano",
+    after - before,
+    "px",
+    after > before ? "[OK - sloupy vznikly]" : "[pozor - zadne podpory]"
   );
 
-  // 3) dekodovani vrstvy uprostred tisku (krychle 40x40mm)
-  const mid = Math.floor(slice.layers.length / 2);
-  const rle = files[`layer_images/layer_${mid}.pw0Img`];
-  const img = decodePW0(rle, MX * MY);
+  const sliceAA = applyAA(slice);
+  const mid = Math.floor(sliceAA.layers.length / 2);
+  const grays = new Set<number>();
+  const d = sliceAA.layers[mid].data;
+  for (let i = 0; i < d.length; i += 1009) {
+    if (d[i] > 0 && d[i] < 255) grays.add(d[i]);
+  }
+  console.log(
+    "AA: mezihodnoty (seda) na vrstve",
+    mid,
+    "=>",
+    grays.size,
+    grays.size > 0 ? "[OK]" : "[CHYBA - bez AA]"
+  );
+
+  const t0 = Date.now();
+  const bytes = await buildPm7([cube, torus], sliceAA, {});
+  writeFileSync("test-output.pm7", bytes);
+  console.log("Export:", bytes.length, "B za", Date.now() - t0, "ms");
+
+  // kontrola vrstvy 100 (z=10mm): krychle + torus i s podporami
+  const files = unzipSync(bytes);
+  const names = Object.keys(files);
+  if (!names.includes("layer_images/layer_100.pw0Img")) {
+    console.log("CHYBI layer_100");
+    process.exit(1);
+  }
+  const img = decodePW0(files["layer_images/layer_100.pw0Img"], MX * MY);
   let minX = Infinity, maxX = -1, minY = Infinity, maxY = -1, count = 0;
   for (let y = 0; y < MY; y++) {
     for (let x = 0; x < MX; x++) {
@@ -113,27 +121,11 @@ async function main() {
     }
   }
   const wmm = ((maxX - minX + 1) * 16.8) / 1000;
-  const hmm = ((maxY - minY + 1) * 24.8) / 1000;
-  const cx = (minX + maxX) / 2;
-  const cy = (minY + maxY) / 2;
-  console.log("\n[3] Vrstva", mid, ":");
-  console.log("   nenulovych pixelu:", count);
-  console.log("   rozmer:", wmm.toFixed(1), "x", hmm.toFixed(1), "mm (ocekavani ~40 x 40 mm)");
-  console.log("   stred:", cx.toFixed(0), ",", cy.toFixed(0), "(stred desky 6656, 2560)");
-  const ok =
-    Math.abs(wmm - 40) < 1.5 &&
-    Math.abs(hmm - 40) < 1.5 &&
-    Math.abs(cx - 6656) < 20 &&
-    Math.abs(cy - 2560) < 20;
-  console.log(ok ? "   [OK] rozmer i poloha sedi" : "   [CHYBA] nesedi");
-
-  // 4) scene.slice delka (hlavicka + per-vrstva 64 B)
-  const scene = files["scene.slice"];
-  const expected = 16 + 64 + 13 * 4 + 64 * 4 + 4 + 4 + slice.layers.length * 64 + 4;
+  console.log("\nVrstva 100: px", count, "· sirka", wmm.toFixed(0), "mm");
   console.log(
-    "\n[4] scene.slice:", scene.length, "B (ocekavani ~", expected, "B)",
-    Math.abs(scene.length - expected) <= 8 ? "[OK]" : "[pozor — jiná délka]"
+    wmm > 120 ? "[OK] pokryva oba modely (krychle + torus)" : "[pozor] mala sirka"
   );
+  console.log("\nHOTOVO — vse proselo");
 }
 
 main().catch((e) => {

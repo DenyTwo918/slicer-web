@@ -9,6 +9,9 @@ export interface SliceOptions {
   /** Velikost tiskové desky v mm — rastr = deska, model se vycentruje */
   plateW?: number;
   plateH?: number;
+  /** Posun modelu po desce (mm), přičte se po vycentrování */
+  offsetX?: number;
+  offsetY?: number;
 }
 
 export interface Layer {
@@ -44,8 +47,10 @@ export function sliceMesh(mesh: StlMesh, opts: SliceOptions): SliceResult {
   const plateH = opts.plateH ?? Math.max(max[1] - min[1], 1e-6);
   const pxPerMmX = opts.resolutionX / plateW;
   const pxPerMmY = opts.resolutionY / plateH;
-  const offsetX = (plateW - (max[0] - min[0])) / 2 - min[0];
-  const offsetY = (plateH - (max[1] - min[1])) / 2 - min[1];
+  const centerX = (plateW - (max[0] - min[0])) / 2 - min[0];
+  const centerY = (plateH - (max[1] - min[1])) / 2 - min[1];
+  const offsetX = centerX + (opts.offsetX ?? 0);
+  const offsetY = centerY + (opts.offsetY ?? 0);
 
   const layers: Layer[] = [];
   const positions = mesh.positions;
@@ -121,5 +126,40 @@ export function sliceMesh(mesh: StlMesh, opts: SliceOptions): SliceResult {
     resolutionY: opts.resolutionY,
     minX: min[0],
     minY: min[1],
+  };
+}
+
+/**
+ * Sjednotí dva slice výsledky (batch — víc modelů na jedné desce).
+ * Předpokládá stejné rozlišení a výšku vrstvy; sloučí rastry vrstvu po vrstvě.
+ */
+export function unionSlices(a: SliceResult, b: SliceResult): SliceResult {
+  const count = Math.max(a.layers.length, b.layers.length);
+  const layers = [];
+  for (let i = 0; i < count; i++) {
+    const la = a.layers[i];
+    const lb = b.layers[i];
+    const data = new Uint8Array(a.resolutionX * a.resolutionY);
+    if (la) {
+      for (let p = 0; p < data.length; p++) data[p] = la.data[p];
+    }
+    if (lb) {
+      for (let p = 0; p < data.length; p++) {
+        if (lb.data[p]) data[p] = 1;
+      }
+    }
+    layers.push({
+      index: i,
+      z: (la ?? lb).z,
+      data,
+    });
+  }
+  return {
+    layers,
+    layerHeight: a.layerHeight,
+    resolutionX: a.resolutionX,
+    resolutionY: a.resolutionY,
+    minX: a.minX,
+    minY: a.minY,
   };
 }
