@@ -89,14 +89,15 @@ function Vat({ printer }: { printer: PrinterProfile }) {
   );
 }
 
-/** Kamera na celou vanu — pohled „nastojato" (deska vodorovně, model svisle). */
+/** Kamera na celou vanu — deska vodorovně, model svisle (up = +Z). */
 function FrameVat({ printer }: { printer: PrinterProfile }) {
   const camera = useThree((s) => s.camera);
   useEffect(() => {
     const s = Math.max(printer.printX, printer.printY);
-    // přední-pravý-horní pohled, deska vodorovně
+    camera.up.set(0, 0, 1); // důležité: naše scéna má "nahoru" ve směru Z
     camera.position.set(s * 1.05, s * 0.62, s * 1.25);
     camera.lookAt(0, printer.printZ * 0.26, 0);
+    camera.updateProjectionMatrix();
   }, [printer, camera]);
   return null;
 }
@@ -121,7 +122,7 @@ export default function Viewport({
       shadows
       dpr={[1, 2]}
       gl={{ antialias: true, preserveDrawingBuffer: true }}
-      camera={{ position: [200, 160, 260], fov: 45, near: 1, far: 4000 }}
+      camera={{ position: [200, 160, 260], up: [0, 0, 1], fov: 45, near: 1, far: 4000 }}
     >
       <color attach="background" args={["#0b0e13"]} />
       <fog attach="fog" args={["#0b0e13", 900, 2600]} />

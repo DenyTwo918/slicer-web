@@ -172,7 +172,14 @@ export default function Home() {
 
   const addModel = useCallback((mesh: StlMesh, name: string) => {
     // postavit na desku (minZ = 0)
-    const m = translateMesh(mesh, 0, 0, -mesh.bounds.min[2]);
+    let m = translateMesh(mesh, 0, 0, -mesh.bounds.min[2]);
+    // automaticky postavit nastojato, pokud je model plochý (leží na podložce)
+    const w = m.bounds.max[0] - m.bounds.min[0];
+    const d = m.bounds.max[1] - m.bounds.min[1];
+    const h = m.bounds.max[2] - m.bounds.min[2];
+    if (h < 0.25 * Math.max(w, d)) {
+      m = normalizeToPlate(autoUpright(m));
+    }
     const slot = SLOT_OFFSETS[modelsRef.current.length % SLOT_OFFSETS.length];
     const item: ModelItem = {
       id: nextId++,
@@ -417,69 +424,76 @@ export default function Home() {
     showToast("ok", "STL stažen ✓");
   }, [selected]);
 
+  const computeSlice = useCallback((): SliceResult | null => {
+    if (models.length === 0) return null;
+    const scale = sliceScale(printer.resX, printer.resY);
+    const sliceW = printer.resX / scale;
+    const sliceH = printer.resY / scale;
+    const mmPerPx = {
+      x: printer.printX / sliceW,
+      y: printer.printY / sliceH,
+    };
+    let result: SliceResult | null = null;
+    for (const m of models) {
+      const s = sliceMesh(m.mesh, {
+        layerHeight: settings.layerHeight,
+        resolutionX: sliceW,
+        resolutionY: sliceH,
+        plateW: printer.printX,
+        plateH: printer.printY,
+        offsetX: m.transform.x,
+        offsetY: m.transform.y,
+      });
+      result = result ? unionSlices(result, s) : s;
+    }
+    if (result && settings.hollow) {
+      result = applyHollow(
+        result,
+        { enabled: true, wallMm: settings.wallMm, holeDiaMm: settings.holeDiaMm, drainHoles: settings.drainHoles },
+        mmPerPx
+      );
+    }
+    if (result && settings.supports) {
+      const px = Math.min(mmPerPx.x, mmPerPx.y);
+      result = generateSupports(result, {
+        enabled: true,
+        radiusPx: Math.max(2, Math.round(settings.supportRadiusMm / px)),
+        tipPx: Math.max(1, Math.round(settings.supportTipMm / px)),
+      });
+    }
+    if (result && settings.raft) {
+      result = applyRaft(
+        result,
+        { enabled: true, layers: settings.raftLayers, marginMm: settings.raftMarginMm },
+        mmPerPx
+      );
+    }
+    if (result && settings.aa) {
+      result = applyAA(result);
+    }
+    return result;
+  }, [models, settings, printer]);
+
   const doSlice = useCallback(() => {
-    if (models.length === 0) return;
     setSlicing(true);
     setTimeout(() => {
       try {
-        const scale = sliceScale(printer.resX, printer.resY);
-        const sliceW = printer.resX / scale;
-        const sliceH = printer.resY / scale;
-        const mmPerPx = {
-          x: printer.printX / sliceW,
-          y: printer.printY / sliceH,
-        };
-        let result: SliceResult | null = null;
-        for (const m of models) {
-          const s = sliceMesh(m.mesh, {
-            layerHeight: settings.layerHeight,
-            resolutionX: sliceW,
-            resolutionY: sliceH,
-            plateW: printer.printX,
-            plateH: printer.printY,
-            offsetX: m.transform.x,
-            offsetY: m.transform.y,
-          });
-          result = result ? unionSlices(result, s) : s;
-        }
-        if (result && settings.hollow) {
-          result = applyHollow(
-            result,
-            { enabled: true, wallMm: settings.wallMm, holeDiaMm: settings.holeDiaMm, drainHoles: settings.drainHoles },
-            mmPerPx
+        const result = computeSlice();
+        if (result) {
+          setSliceResult(result);
+          setSliceIdx(0);
+          showToast(
+            "ok",
+            `Naslicováno ✓ · ${result.layers.length} vrstev · ${result.layerHeight} mm${settings.supports ? " · podpory" : ""}${settings.aa ? " · AA" : ""}`
           );
         }
-        if (result && settings.supports) {
-          const px = Math.min(mmPerPx.x, mmPerPx.y);
-          result = generateSupports(result, {
-            enabled: true,
-            radiusPx: Math.max(2, Math.round(settings.supportRadiusMm / px)),
-            tipPx: Math.max(1, Math.round(settings.supportTipMm / px)),
-          });
-        }
-        if (result && settings.raft) {
-          result = applyRaft(
-            result,
-            { enabled: true, layers: settings.raftLayers, marginMm: settings.raftMarginMm },
-            mmPerPx
-          );
-        }
-        if (result && settings.aa) {
-          result = applyAA(result);
-        }
-        setSliceResult(result);
-        setSliceIdx(0);
-        showToast(
-          "ok",
-          `Naslicováno ✓ · ${result!.layers.length} vrstev · ${result!.layerHeight} mm${settings.supports ? " · podpory" : ""}${settings.aa ? " · AA" : ""}`
-        );
       } catch (e) {
         showToast("err", e instanceof Error ? e.message : "Slicování selhalo.", 8000);
       } finally {
         setSlicing(false);
       }
     }, 30);
-  }, [models, settings, printer]);
+  }, [computeSlice, settings]);
 
   const estPrintTime = useMemo(() => {
     if (!sliceResult) return 0;
@@ -497,34 +511,86 @@ export default function Home() {
     );
   }, [sliceResult, settings]);
 
+  const buildExport = useCallback(async (): Promise<{ bytes: Uint8Array; name: string } | null> => {
+    if (!sliceResult || models.length === 0) return null;
+    const bytes = await buildPm7(
+      models.map((m) => applyTransform(m.mesh, m.transform)),
+      sliceResult,
+      {
+        printer,
+        bottomExposure: settings.bottomExposure,
+        normalExposure: settings.normalExposure,
+        bottomLayers: settings.bottomLayers,
+        zupHeight: settings.zupHeight,
+        zupSpeed: settings.zupSpeed,
+        zupHeightBottom: settings.zupHeightBottom,
+        zupSpeedBottom: settings.zupSpeedBottom,
+        printTimeS: estPrintTime,
+      }
+    );
+    return { bytes, name: `${exportName}.${printer.keySuffix}` };
+  }, [sliceResult, models, settings, printer, exportName, estPrintTime]);
+
   const exportPm7 = useCallback(async () => {
-    if (!sliceResult || models.length === 0) return;
     setExporting(true);
     try {
-      const bytes = await buildPm7(
-        models.map((m) => applyTransform(m.mesh, m.transform)),
-        sliceResult,
-        {
-          printer,
-          bottomExposure: settings.bottomExposure,
-          normalExposure: settings.normalExposure,
-          bottomLayers: settings.bottomLayers,
-          zupHeight: settings.zupHeight,
-          zupSpeed: settings.zupSpeed,
-          zupHeightBottom: settings.zupHeightBottom,
-          zupSpeedBottom: settings.zupSpeedBottom,
-          printTimeS: estPrintTime,
-        }
-      );
-      downloadBytes(bytes, `${exportName}.${printer.keySuffix}`);
-      setLastExport({ bytes, name: `${exportName}.${printer.keySuffix}` });
+      const ex = await buildExport();
+      if (!ex) return;
+      downloadBytes(ex.bytes, ex.name);
+      setLastExport(ex);
       showToast("ok", "Soubor .pm7 stažen ✓ · USB: kořen disku, ≤15 znaků, FAT32", 10000);
     } catch (e) {
       showToast("err", e instanceof Error ? e.message : "Export .pm7 selhal.", 8000);
     } finally {
       setExporting(false);
     }
-  }, [sliceResult, models, settings, printer, exportName, estPrintTime]);
+  }, [buildExport]);
+
+  const printNow = useCallback(async () => {
+    if (models.length === 0) return;
+    setSending(true);
+    try {
+      // 1) slicovat, pokud ještě není
+      if (!sliceResult) {
+        showToast("ok", "Slicuji…", 3000);
+        const result = computeSlice();
+        if (!result) {
+          showToast("err", "Slicování selhalo.", 8000);
+          return;
+        }
+        setSliceResult(result);
+        setSliceIdx(0);
+      }
+      // 2) připravit soubor v paměti (bez stažení)
+      const ex = await buildExport();
+      if (!ex) return;
+      setLastExport(ex);
+      // 3) token
+      let jwt = getStoredJwt();
+      if (!jwt) {
+        const input = prompt(
+          "Vlož Anycubic access token.\n" +
+            "(najdeš ho na PC v AppData\\Local\\Anycubic\\AnycubicPhotonWorkshop_V4.1.8\\global_config.ini, řádek accessToken=...)"
+        );
+        if (!input) return;
+        jwt = input.trim();
+        setStoredJwt(jwt);
+      }
+      // 4) poslat do tiskárny
+      const fileId = await sendPrintToPrinter(ex.bytes, ex.name, jwt, (msg) =>
+        showToast("ok", msg, 6000)
+      );
+      showToast(
+        "ok",
+        `Soubor poslán do tiskárny ✓ (file ${fileId}) · tiskárna stahuje · tisk potvrď na displeji tiskárny`,
+        15000
+      );
+    } catch (e) {
+      showToast("err", e instanceof Error ? e.message : "Odeslání do tiskárny selhalo.", 10000);
+    } finally {
+      setSending(false);
+    }
+  }, [models, sliceResult, computeSlice, buildExport]);
 
   const centerSel = useCallback(() => {
     if (!selectedId) return;
@@ -580,34 +646,6 @@ export default function Home() {
     }
   }, []);
 
-  const sendToPrinter = useCallback(async () => {
-    if (!lastExport) return;
-    let jwt = getStoredJwt();
-    if (!jwt) {
-      const input = prompt(
-        "Vlož Anycubic access token.\n" +
-          "(najdeš ho na PC v AppData\\Local\\Anycubic\\AnycubicPhotonWorkshop_V4.1.8\\global_config.ini, řádek accessToken=...)"
-      );
-      if (!input) return;
-      jwt = input.trim();
-      setStoredJwt(jwt);
-    }
-    setSending(true);
-    try {
-      const fileId = await sendPrintToPrinter(lastExport.bytes, lastExport.name, jwt, (msg) =>
-        showToast("ok", msg, 6000)
-      );
-      showToast(
-        "ok",
-        `Soubor poslán do tiskárny ✓ (file ${fileId}) · tiskárna stahuje · tisk potvrď na displeji tiskárny`,
-        15000
-      );
-    } catch (e) {
-      showToast("err", e instanceof Error ? e.message : "Odeslání do tiskárny selhalo.", 10000);
-    } finally {
-      setSending(false);
-    }
-  }, [lastExport]);
 
   const volMl = totalVolume(models.map((m) => applyTransform(m.mesh, m.transform))) / 1000;
   const selStats: MeshStats | null = selected ? meshStats(selected.mesh) : null;
@@ -648,7 +686,7 @@ export default function Home() {
       else if (k === "d") duplicateSel();
       else if (k === "c") centerSel();
       else if (k === "r") resetSel();
-      else if (k === "p") sendToPrinter();
+      else if (k === "p") printNow();
       else if (k === "m") mirrorSel("x");
       else if (e.key === "ArrowLeft") nudgeSel(-5, 0);
       else if (e.key === "ArrowRight") nudgeSel(5, 0);
@@ -657,7 +695,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [orientSel, doSlice, exportPm7, duplicateSel, centerSel, resetSel, sendToPrinter, mirrorSel, nudgeSel]);
+  }, [orientSel, doSlice, exportPm7, duplicateSel, centerSel, resetSel, printNow, mirrorSel, nudgeSel]);
 
   return (
     <div className="page">
@@ -779,16 +817,6 @@ export default function Home() {
             <button className="btn btn-small btn-green" onClick={doSlice} disabled={slicing || models.length === 0}>
               {slicing ? "Slicuji…" : "Slicovat"}
             </button>
-            {sliceResult && (
-              <button className="btn btn-small btn-green" onClick={exportPm7} disabled={exporting}>
-                {exporting ? "Generuji…" : "Export .pm7"}
-              </button>
-            )}
-            {lastExport && (
-              <button className="btn btn-small btn-green" onClick={sendToPrinter} disabled={sending}>
-                {sending ? "Posílám…" : "Poslat do tiskárny (WiFi)"}
-              </button>
-            )}
             <button
               className={`btn btn-small ${showInfo ? "btn-primary" : "btn-ghost"}`}
               onClick={() => setShowInfo((s) => !s)}
@@ -800,6 +828,22 @@ export default function Home() {
               onClick={() => setShowSettings((s) => !s)}
             >
               Nastavení
+            </button>
+          </div>
+        )}
+
+        {models.length > 0 && (
+          <div className="fab-wrap" style={{ bottom: sliceResult ? 400 : 18 }}>
+            <button className="btn btn-fab" onClick={printNow} disabled={sending || exporting}>
+              {sending ? "Posílám…" : "Tisknout"}
+            </button>
+            <button
+              className="btn btn-small btn-ghost fab-usb"
+              onClick={exportPm7}
+              disabled={exporting}
+              title="Uložit soubor na USB (stažení .pm7)"
+            >
+              {exporting ? "…" : "USB"}
             </button>
           </div>
         )}
