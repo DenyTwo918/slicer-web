@@ -71,3 +71,65 @@ export function makeTorus(
     bounds: { min, max },
   };
 }
+
+/**
+ * Testovací kvádr (krychle) postavený na desce — ideální na čisté
+ * vyzkoušení slicování a exportu .pm7.
+ */
+export function makeBox(size = 40, height = 60): StlMesh {
+  const s = size / 2;
+  const corners: [number, number, number][] = [
+    [-s, -s, 0], [s, -s, 0], [s, s, 0], [-s, s, 0],
+    [-s, -s, height], [s, -s, height], [s, s, height], [-s, s, height],
+  ];
+  const faces: [number, number, number][] = [
+    [0, 2, 1], [0, 3, 2], // dno
+    [4, 5, 6], [4, 6, 7], // viko
+    [0, 1, 5], [0, 5, 4], // přední
+    [1, 2, 6], [1, 6, 5], // pravá
+    [2, 3, 7], [2, 7, 6], // zadní
+    [3, 0, 4], [3, 4, 7], // levá
+  ];
+
+  const positions = new Float32Array(faces.length * 9);
+  const normals = new Float32Array(faces.length * 9);
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+
+  faces.forEach((f, i) => {
+    const v0 = corners[f[0]];
+    const v1 = corners[f[1]];
+    const v2 = corners[f[2]];
+    const e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+    const e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+    const n = [
+      e1[1] * e2[2] - e1[2] * e2[1],
+      e1[2] * e2[0] - e1[0] * e2[2],
+      e1[0] * e2[1] - e1[1] * e2[0],
+    ];
+    const len = Math.hypot(n[0], n[1], n[2]) || 1;
+    const p = i * 9;
+    for (let k = 0; k < 3; k++) {
+      const v = k === 0 ? v0 : k === 1 ? v1 : v2;
+      positions[p + k * 3] = v[0];
+      positions[p + k * 3 + 1] = v[1];
+      positions[p + k * 3 + 2] = v[2];
+      normals[p + k * 3] = n[0] / len;
+      normals[p + k * 3 + 1] = n[1] / len;
+      normals[p + k * 3 + 2] = n[2] / len;
+    }
+    for (const v of [v0, v1, v2]) {
+      for (let k = 0; k < 3; k++) {
+        if (v[k] < min[k]) min[k] = v[k];
+        if (v[k] > max[k]) max[k] = v[k];
+      }
+    }
+  });
+
+  return {
+    positions,
+    normals,
+    triangleCount: faces.length,
+    bounds: { min, max },
+  };
+}

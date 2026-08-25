@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Viewport from "@/components/Viewport";
 import LayerPreview from "@/components/LayerPreview";
 import { parseStl, type StlMesh } from "@/lib/stl";
-import { makeTorus } from "@/lib/demo";
+import { makeTorus, makeBox } from "@/lib/demo";
 import {
   findBestOrientation,
   meshStats,
@@ -100,6 +100,12 @@ export default function Home() {
     const m = makeTorus();
     originalRef.current = m;
     applyMesh(m, "demo model (donut)");
+  }, [applyMesh]);
+
+  const loadCube = useCallback(() => {
+    const m = makeBox();
+    originalRef.current = m;
+    applyMesh(m, "testovací krychle 40×40×60 mm");
   }, [applyMesh]);
 
   // drag & drop kamkoli na stránku
@@ -214,6 +220,9 @@ export default function Home() {
           </button>
           <button className="btn btn-small btn-ghost" onClick={loadDemo}>
             Demo
+          </button>
+          <button className="btn btn-small btn-ghost" onClick={loadCube}>
+            Krychle
           </button>
         </div>
       </header>
