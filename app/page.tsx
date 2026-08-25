@@ -17,6 +17,7 @@ import {
   translateMesh,
   rotateMesh,
   scaleMesh,
+  mirrorMesh,
   totalVolume,
   fitsInVat,
   normalizeToPlate,
@@ -70,6 +71,8 @@ interface SliceSettings {
   zupSpeed: number;
   zupHeightBottom: number;
   zupSpeedBottom: number;
+  supportRadiusMm: number;
+  supportTipMm: number;
 }
 
 const DEFAULT_SETTINGS: SliceSettings = {
@@ -90,6 +93,8 @@ const DEFAULT_SETTINGS: SliceSettings = {
   zupSpeed: 1.0,
   zupHeightBottom: 1.5,
   zupSpeedBottom: 0.5,
+  supportRadiusMm: 1.0,
+  supportTipMm: 0.5,
 };
 
 const SLOT_OFFSETS: [number, number][] = [
@@ -426,7 +431,12 @@ export default function Home() {
           );
         }
         if (result && settings.supports) {
-          result = generateSupports(result, { enabled: true });
+          const px = Math.min(mmPerPx.x, mmPerPx.y);
+          result = generateSupports(result, {
+            enabled: true,
+            radiusPx: Math.max(2, Math.round(settings.supportRadiusMm / px)),
+            tipPx: Math.max(1, Math.round(settings.supportTipMm / px)),
+          });
         }
         if (result && settings.raft) {
           result = applyRaft(
@@ -452,6 +462,22 @@ export default function Home() {
     }, 30);
   }, [models, settings, printer]);
 
+  const estPrintTime = useMemo(() => {
+    if (!sliceResult) return 0;
+    const perLayer =
+      settings.normalExposure +
+      2 * (settings.zupHeight / Math.max(settings.zupSpeed, 0.1)) +
+      2;
+    const bottom =
+      settings.bottomLayers *
+      (settings.bottomExposure +
+        2 * (settings.zupHeightBottom / Math.max(settings.zupSpeedBottom, 0.1)) +
+        2);
+    return Math.round(
+      bottom + Math.max(0, sliceResult.layers.length - settings.bottomLayers) * perLayer
+    );
+  }, [sliceResult, settings]);
+
   const exportPm7 = useCallback(async () => {
     if (!sliceResult || models.length === 0) return;
     setExporting(true);
@@ -468,6 +494,7 @@ export default function Home() {
           zupSpeed: settings.zupSpeed,
           zupHeightBottom: settings.zupHeightBottom,
           zupSpeedBottom: settings.zupSpeedBottom,
+          printTimeS: estPrintTime,
         }
       );
       downloadBytes(bytes, `${exportName}.${printer.keySuffix}`);
@@ -478,13 +505,61 @@ export default function Home() {
     } finally {
       setExporting(false);
     }
-  }, [sliceResult, models, settings, printer, exportName]);
+  }, [sliceResult, models, settings, printer, exportName, estPrintTime]);
 
   const centerSel = useCallback(() => {
     if (!selectedId) return;
     updateModel(selectedId, (m) => ({ ...m, transform: { ...m.transform, x: 0, y: 0 } }));
     showToast("ok", "Model vycentrován ✓");
   }, [selectedId, updateModel]);
+
+  const mirrorSel = useCallback(
+    (axis: "x" | "y" | "z") => {
+      if (!selectedId) return;
+      updateModel(selectedId, (m) => ({
+        ...m,
+        mesh: normalizeToPlate(mirrorMesh(m.mesh, axis)),
+      }));
+      showToast("ok", `Model zrcadlen podle ${axis.toUpperCase()} ✓`);
+    },
+    [selectedId, updateModel]
+  );
+
+  const nudgeSel = useCallback(
+    (dx: number, dy: number) => {
+      if (!selectedId) return;
+      updateModel(selectedId, (m) => ({
+        ...m,
+        transform: { ...m.transform, x: m.transform.x + dx, y: m.transform.y + dy },
+      }));
+    },
+    [selectedId, updateModel]
+  );
+
+  const arrangeAll = useCallback(() => {
+    setModels((prev) =>
+      prev.map((m, i) => {
+        const s = SLOT_OFFSETS[i % SLOT_OFFSETS.length];
+        return { ...m, transform: { ...m.transform, x: s[0], y: s[1] } };
+      })
+    );
+    setSliceResult(null);
+    showToast("ok", "Modely rozmístěny ✓");
+  }, []);
+
+  const screenshot3d = useCallback(() => {
+    const canvas = document.querySelector("canvas");
+    if (!canvas) return;
+    try {
+      const a = document.createElement("a");
+      a.href = canvas.toDataURL("image/png");
+      a.download = "slicer-3d.png";
+      a.click();
+      showToast("ok", "Screenshot 3D stažen ✓");
+    } catch {
+      showToast("err", "Screenshot se nepodařil.", 6000);
+    }
+  }, []);
 
   const sendToPrinter = useCallback(async () => {
     if (!lastExport) return;
@@ -555,10 +630,15 @@ export default function Home() {
       else if (k === "c") centerSel();
       else if (k === "r") resetSel();
       else if (k === "p") sendToPrinter();
+      else if (k === "m") mirrorSel("x");
+      else if (e.key === "ArrowLeft") nudgeSel(-5, 0);
+      else if (e.key === "ArrowRight") nudgeSel(5, 0);
+      else if (e.key === "ArrowUp") nudgeSel(0, 5);
+      else if (e.key === "ArrowDown") nudgeSel(0, -5);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [orientSel, doSlice, exportPm7, duplicateSel, centerSel, resetSel, sendToPrinter]);
+  }, [orientSel, doSlice, exportPm7, duplicateSel, centerSel, resetSel, sendToPrinter, mirrorSel, nudgeSel]);
 
   return (
     <div className="page">
@@ -656,6 +736,18 @@ export default function Home() {
             </button>
             <button className="btn btn-small btn-ghost" onClick={downloadSelStl} disabled={!selected}>
               STL
+            </button>
+            <button className="btn btn-small btn-ghost" onClick={() => mirrorSel("x")} disabled={!selected}>
+              Zrcad X
+            </button>
+            <button className="btn btn-small btn-ghost" onClick={() => mirrorSel("y")} disabled={!selected}>
+              Zrcad Y
+            </button>
+            <button className="btn btn-small btn-ghost" onClick={arrangeAll} disabled={models.length < 2}>
+              Rozmístit
+            </button>
+            <button className="btn btn-small btn-ghost" onClick={screenshot3d}>
+              Foto
             </button>
             <button className="btn btn-small btn-green" onClick={doSlice} disabled={slicing || models.length === 0}>
               {slicing ? "Slicuji…" : "Slicovat"}
@@ -786,6 +878,30 @@ export default function Home() {
               />
               <span>Automatické podpory</span>
             </label>
+            {settings.supports && (
+              <>
+                <label className="set-row">
+                  <span>Podpory Ø (mm)</span>
+                  <input
+                    type="number"
+                    step={0.1}
+                    min={0.3}
+                    value={settings.supportRadiusMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportRadiusMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Špička podpory (mm)</span>
+                  <input
+                    type="number"
+                    step={0.1}
+                    min={0.2}
+                    value={settings.supportTipMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportTipMm: Number(e.target.value) }))}
+                  />
+                </label>
+              </>
+            )}
             <label className="set-row check">
               <input
                 type="checkbox"
@@ -906,7 +1022,8 @@ export default function Home() {
               />
             </label>
             <p className="info-note">
-              Zkratky: O narovnej · S slicuj · E export · P poslat · D duplikovat · C centrovat · R vrátit
+              Zkratky: O narovnej · S slicuj · E export · P poslat · D duplikovat · C centrovat ·
+              M zrcadlit X · šipky = posun 5 mm · R vrátit
             </p>
           </div>
         )}
@@ -952,7 +1069,7 @@ export default function Home() {
                 </div>
                 <div className="info-row">
                   <span>Čas (odhad)</span>
-                  <b>{fmtTime(sliceResult.layers.length * 10)}</b>
+                  <b>{fmtTime(estPrintTime)}</b>
                 </div>
               </>
             )}

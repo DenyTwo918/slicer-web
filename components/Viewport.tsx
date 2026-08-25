@@ -120,7 +120,7 @@ export default function Viewport({
     <Canvas
       shadows
       dpr={[1, 2]}
-      gl={{ antialias: true }}
+      gl={{ antialias: true, preserveDrawingBuffer: true }}
       camera={{ position: [200, 160, 260], fov: 45, near: 1, far: 4000 }}
     >
       <color attach="background" args={["#0b0e13"]} />

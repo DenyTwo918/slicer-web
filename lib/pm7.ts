@@ -361,6 +361,8 @@ export interface Pm7Options {
   zupHeight?: number;
   zupSpeed?: number;
   zdownSpeed?: number;
+  /** celkový odhad času tisku (s) — jde do print_info.json */
+  printTimeS?: number;
 }
 
 /**
@@ -426,7 +428,8 @@ export async function buildPm7(
   ]);
 
   const volumeMl = totalVolume(meshes) / 1000;
-  const printTimeS = Math.round(slice.layers.length * 10);
+  const printTimeS =
+    opts.printTimeS ?? Math.round(slice.layers.length * 10);
 
   const files: Record<string, Uint8Array> = {
     "anycubic_photon_resins.pwsp": strToU8(JSON.stringify(buildPwsp(machine), null, 4)),

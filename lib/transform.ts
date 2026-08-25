@@ -69,6 +69,25 @@ export function rotateMesh(mesh: StlMesh, rx: number, ry: number, rz: number): S
   return rotateOrient(mesh, rx, ry, rz);
 }
 
+/** Zrcadlení meshe podle osy (normaly se přepočítají). */
+export function mirrorMesh(mesh: StlMesh, axis: "x" | "y" | "z"): StlMesh {
+  const idx = axis === "x" ? 0 : axis === "y" ? 1 : 2;
+  const positions = new Float32Array(mesh.positions.length);
+  const normals = new Float32Array(mesh.normals.length);
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < mesh.positions.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      const s = k === idx ? -1 : 1;
+      positions[i + k] = mesh.positions[i + k] * s;
+      normals[i + k] = mesh.normals[i + k] * s;
+      if (positions[i + k] < min[k]) min[k] = positions[i + k];
+      if (positions[i + k] > max[k]) max[k] = positions[i + k];
+    }
+  }
+  return { ...mesh, positions, normals, bounds: { min, max } };
+}
+
 /** Aplikuje celý transform na data meshe (pro slicování/export). */
 export function applyTransform(mesh: StlMesh, t: ModelTransform): StlMesh {
   let m = mesh;
