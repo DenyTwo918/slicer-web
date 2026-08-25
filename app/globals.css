@@ -490,6 +490,32 @@ header {
   text-align: center;
 }
 
+/* ---------- lišta vrstev (náhled tisku) ---------- */
+.layer-bar {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 7;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 18px 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  width: min(560px, 60%);
+  text-align: center;
+}
+.layer-bar input[type="range"] {
+  width: 100%;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+.layer-bar-label {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 /* ---------- toast ---------- */
 .toast {
   position: absolute;

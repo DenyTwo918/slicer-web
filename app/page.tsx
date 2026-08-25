@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Viewport from "@/components/Viewport";
-import LayerPreview from "@/components/LayerPreview";
 import { parseStl, type StlMesh } from "@/lib/stl";
 import { parseObj } from "@/lib/obj";
 import { makeTorus, makeBox } from "@/lib/demo";
@@ -675,6 +674,15 @@ export default function Home() {
   );
   const allFit = viewModels.every((m) => m.fits);
 
+  const layerPreview = sliceResult
+    ? {
+        z: sliceResult.layers[sliceIdx].z,
+        data: sliceResult.layers[sliceIdx].data,
+        resX: sliceResult.resolutionX,
+        resY: sliceResult.resolutionY,
+      }
+    : null;
+
   const fmtTime = (sec: number) => {
     const h = Math.floor(sec / 3600);
     const m = Math.round((sec % 3600) / 60);
@@ -745,6 +753,7 @@ export default function Home() {
             selectedId={selectedId}
             onMove={onMove}
             printer={printer}
+            layerPreview={layerPreview}
           />
         </div>
 
@@ -1222,14 +1231,7 @@ export default function Home() {
         )}
 
         {sliceResult && (
-          <div className="slice-panel">
-            <div className="slice-head">
-              <b>Vrstvy</b>
-              <button className="slice-close" onClick={() => setSliceResult(null)}>
-                × zavřít
-              </button>
-            </div>
-            <LayerPreview sliceResult={sliceResult} layerIdx={sliceIdx} />
+          <div className="layer-bar">
             <input
               type="range"
               min={0}
@@ -1237,9 +1239,9 @@ export default function Home() {
               value={sliceIdx}
               onChange={(e) => setSliceIdx(Number(e.target.value))}
             />
-            <div className="slice-label">
+            <div className="layer-bar-label">
               Vrstva {sliceIdx + 1} / {sliceResult.layers.length} · z ={" "}
-              {sliceResult.layers[sliceIdx].z.toFixed(2)} mm
+              {sliceResult.layers[sliceIdx].z.toFixed(2)} mm · {sliceResult.layerHeight} mm/vrstva
             </div>
           </div>
         )}

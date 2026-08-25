@@ -22,6 +22,66 @@ interface ViewModel {
   fits: boolean;
 }
 
+export interface LayerPreviewData {
+  z: number;
+  data: Uint8Array;
+  resX: number;
+  resY: number;
+}
+
+/** Řezová rovina tisku — ukazuje aktuální vrstvu ve 3D (jako slicery). */
+function LayerPlane({
+  preview,
+  printer,
+}: {
+  preview: LayerPreviewData | null;
+  printer: PrinterProfile;
+}) {
+  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
+  useEffect(() => {
+    if (!preview) {
+      setTexture(null);
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = preview.resX;
+    canvas.height = preview.resY;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const img = ctx.createImageData(preview.resX, preview.resY);
+    for (let i = 0; i < preview.data.length; i++) {
+      const v = preview.data[i];
+      const o = i * 4;
+      img.data[o] = 255;
+      img.data[o + 1] = 255;
+      img.data[o + 2] = 255;
+      img.data[o + 3] = v; // alpha = hodnota vrstvy (AA šedá)
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    setTexture(tex);
+    return () => {
+      tex.dispose();
+    };
+  }, [preview]);
+
+  if (!preview) return null;
+  return (
+    <mesh position={[0, 0, preview.z]}>
+      <planeGeometry args={[printer.printX, printer.printY]} />
+      <meshBasicMaterial
+        map={texture ?? undefined}
+        color="#4ade80"
+        transparent
+        opacity={0.95}
+        depthWrite={false}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
 function Model({ mesh, color }: { mesh: StlMesh; color: string }) {
   const geometry = useMemo(() => {
     const g = new THREE.BufferGeometry();
@@ -107,11 +167,13 @@ export default function Viewport({
   selectedId,
   onMove,
   printer,
+  layerPreview,
 }: {
   models: ViewModel[];
   selectedId: number | null;
   onMove: (id: number, x: number, y: number) => void;
   printer: PrinterProfile;
+  layerPreview?: LayerPreviewData | null;
 }) {
   const selectedRef = useRef<THREE.Group>(null);
   const orbitRef = useRef<any>(null);
@@ -142,6 +204,7 @@ export default function Viewport({
 
       <BuildPlate printer={printer} />
       <Vat printer={printer} />
+      <LayerPlane preview={layerPreview ?? null} printer={printer} />
 
       {models.map((m) => {
         let color = "#5b9cf6";
