@@ -9,6 +9,7 @@ import { generateSupports } from "../lib/supports";
 import { applyAA } from "../lib/aa";
 import { buildPm7 } from "../lib/pm7";
 import { translateMesh } from "../lib/transform";
+import { getPrinter } from "../lib/profiles";
 import { unzipSync } from "fflate";
 
 const MX = 13312;
@@ -125,6 +126,18 @@ async function main() {
   console.log(
     wmm > 120 ? "[OK] pokryva oba modely (krychle + torus)" : "[pozor] mala sirka"
   );
+
+  // 5) parametrizace tiskárny (M5s)
+  const bytes2 = await buildPm7([cube], sliceAA, { printer: getPrinter("m5s") });
+  const files2 = unzipSync(bytes2);
+  const pwsp = new TextDecoder().decode(files2["anycubic_photon_resins.pwsp"]);
+  const layerCount2 = Object.keys(files2).filter((n) => n.startsWith("layer_images/")).length;
+  console.log(
+    "\n[5] M5s profil:", pwsp.includes("Photon Mono M5s") ? "[OK]" : "[CHYBA]",
+    "· vrstev v souboru:", layerCount2,
+    layerCount2 === slice.layers.length ? "[OK]" : "[CHYBA]"
+  );
+
   console.log("\nHOTOVO — vse proselo");
 }
 

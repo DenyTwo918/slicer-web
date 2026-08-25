@@ -24,6 +24,19 @@ import { sliceMesh, unionSlices, type SliceResult } from "@/lib/slice";
 import { generateSupports } from "@/lib/supports";
 import { applyAA } from "@/lib/aa";
 import { buildPm7 } from "@/lib/pm7";
+import {
+  PRINTERS,
+  RESINS,
+  FILMS,
+  getPrinter,
+  getResin,
+  getFilm,
+  loadSavedProfile,
+  saveProfile,
+  DEFAULT_PRINTER_ID,
+  DEFAULT_RESIN_ID,
+  DEFAULT_FILM_ID,
+} from "@/lib/profiles";
 
 interface ModelItem {
   id: number;
@@ -42,7 +55,6 @@ interface SliceSettings {
   aa: boolean;
 }
 
-const PLATE = { w: 223.64, h: 126.48 };
 const SLOT_OFFSETS: [number, number][] = [
   [0, 0],
   [-70, 0],
@@ -53,6 +65,14 @@ const SLOT_OFFSETS: [number, number][] = [
   [-105, 0],
   [105, 0],
 ];
+
+/** Měřítko pro slicovací rastr — vždy dělí rozlišení tiskárny beze zbytku. */
+function sliceScale(resX: number, resY: number): number {
+  if (resX % 8 === 0 && resY % 8 === 0) return 8;
+  if (resX % 4 === 0 && resY % 4 === 0) return 4;
+  if (resX % 2 === 0 && resY % 2 === 0) return 2;
+  return 1;
+}
 
 let nextId = 1;
 
@@ -67,16 +87,28 @@ function downloadBytes(bytes: Uint8Array, name: string) {
 }
 
 export default function Home() {
+  const [savedProfile] = useState(loadSavedProfile);
+  const [printerId, setPrinterId] = useState<string>(
+    savedProfile?.printerId ?? DEFAULT_PRINTER_ID
+  );
+  const [resinId, setResinId] = useState<string>(
+    savedProfile?.resinId ?? DEFAULT_RESIN_ID
+  );
+  const [filmId, setFilmId] = useState<string>(
+    savedProfile?.filmId ?? DEFAULT_FILM_ID
+  );
   const [models, setModels] = useState<ModelItem[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [settings, setSettings] = useState<SliceSettings>({
-    layerHeight: 0.1,
-    bottomExposure: 25,
-    normalExposure: 2.5,
-    bottomLayers: 5,
-    supports: true,
-    aa: true,
-  });
+  const [settings, setSettings] = useState<SliceSettings>(
+    savedProfile?.settings ?? {
+      layerHeight: 0.1,
+      bottomExposure: 25,
+      normalExposure: 2.5,
+      bottomLayers: 5,
+      supports: true,
+      aa: true,
+    }
+  );
 
   const [sliceResult, setSliceResult] = useState<SliceResult | null>(null);
   const [sliceIdx, setSliceIdx] = useState(0);
@@ -164,6 +196,43 @@ export default function Home() {
     };
   }, [loadFiles]);
 
+  const printer = getPrinter(printerId);
+  const resin = getResin(resinId);
+  const film = getFilm(filmId);
+
+  // uložení poslední volby (tiskárna / pryskyřice / fólie / nastavení)
+  useEffect(() => {
+    saveProfile({ printerId, resinId, filmId, settings });
+  }, [printerId, resinId, filmId, settings]);
+
+  const selectResin = useCallback(
+    (id: string) => {
+      setResinId(id);
+      const r = getResin(id);
+      const f = getFilm(filmId);
+      setSettings((s) => ({
+        ...s,
+        bottomLayers: r.bottomLayers,
+        bottomExposure: r.bottomExposure,
+        normalExposure: Math.round(r.normalExposure * f.exposureFactor * 10) / 10,
+      }));
+    },
+    [filmId]
+  );
+
+  const selectFilm = useCallback(
+    (id: string) => {
+      setFilmId(id);
+      const f = getFilm(id);
+      const r = getResin(resinId);
+      setSettings((s) => ({
+        ...s,
+        normalExposure: Math.round(r.normalExposure * f.exposureFactor * 10) / 10,
+      }));
+    },
+    [resinId]
+  );
+
   const selected = models.find((m) => m.id === selectedId) ?? null;
 
   const updateModel = useCallback((id: number, fn: (m: ModelItem) => ModelItem) => {
@@ -230,14 +299,15 @@ export default function Home() {
     setSlicing(true);
     setTimeout(() => {
       try {
+        const scale = sliceScale(printer.resX, printer.resY);
         let result: SliceResult | null = null;
         for (const m of models) {
           const s = sliceMesh(m.mesh, {
             layerHeight: settings.layerHeight,
-            resolutionX: 1664,
-            resolutionY: 640,
-            plateW: PLATE.w,
-            plateH: PLATE.h,
+            resolutionX: printer.resX / scale,
+            resolutionY: printer.resY / scale,
+            plateW: printer.printX,
+            plateH: printer.printY,
             offsetX: m.transform.x,
             offsetY: m.transform.y,
           });
@@ -261,7 +331,7 @@ export default function Home() {
         setSlicing(false);
       }
     }, 30);
-  }, [models, settings]);
+  }, [models, settings, printer]);
 
   const exportPm7 = useCallback(async () => {
     if (!sliceResult || models.length === 0) return;
@@ -271,19 +341,20 @@ export default function Home() {
         models.map((m) => applyTransform(m.mesh, m.transform)),
         sliceResult,
         {
+          printer,
           bottomExposure: settings.bottomExposure,
           normalExposure: settings.normalExposure,
           bottomLayers: settings.bottomLayers,
         }
       );
-      downloadBytes(bytes, "tisk.pm7");
+      downloadBytes(bytes, `tisk.${printer.keySuffix}`);
       showToast("ok", "Soubor .pm7 stažen ✓ · USB: kořen disku, ≤15 znaků, FAT32", 10000);
     } catch (e) {
       showToast("err", e instanceof Error ? e.message : "Export .pm7 selhal.", 8000);
     } finally {
       setExporting(false);
     }
-  }, [sliceResult, models, settings]);
+  }, [sliceResult, models, settings, printer]);
 
   const volMl = totalVolume(models.map((m) => applyTransform(m.mesh, m.transform))) / 1000;
   const selStats: MeshStats | null = selected ? meshStats(selected.mesh) : null;
@@ -399,6 +470,43 @@ export default function Home() {
           <div className="info-panel settings">
             <div className="info-title">Nastavení tisku</div>
             <label className="set-row">
+              <span>Tiskárna</span>
+              <select
+                value={printerId}
+                onChange={(e) => {
+                  setPrinterId(e.target.value);
+                  setSliceResult(null);
+                }}
+              >
+                {PRINTERS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.brand} {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="set-row">
+              <span>Pryskyřice</span>
+              <select value={resinId} onChange={(e) => selectResin(e.target.value)}>
+                {RESINS.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.brand} {r.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="set-row">
+              <span>Fólie</span>
+              <select value={filmId} onChange={(e) => selectFilm(e.target.value)}>
+                {FILMS.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="info-note">Poslední volba se pamatuje i po zavření stránky.</p>
+            <label className="set-row">
               <span>Výška vrstvy</span>
               <select
                 value={settings.layerHeight}
@@ -462,6 +570,18 @@ export default function Home() {
         {showInfo && (
           <div className="info-panel">
             <div className="info-title">Informace</div>
+            <div className="info-row">
+              <span>Tiskárna</span>
+              <b>
+                {printer.brand} {printer.name}
+              </b>
+            </div>
+            <div className="info-row">
+              <span>Pryskyřice</span>
+              <b>
+                {resin.brand} {resin.name} ({film.name})
+              </b>
+            </div>
             <div className="info-row">
               <span>Modely</span>
               <b>{models.length}</b>

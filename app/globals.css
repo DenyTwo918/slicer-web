@@ -308,7 +308,13 @@ header {
 .set-row:last-child {
   border-bottom: none;
 }
-.set-row select,
+.set-row select {
+  width: 160px;
+  padding: 6px 8px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 .set-row input[type="number"] {
   width: 90px;
   padding: 6px 8px;

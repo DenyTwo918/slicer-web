@@ -2,9 +2,10 @@ import { zipSync, strToU8 } from "fflate";
 import type { SliceResult } from "./slice";
 import type { StlMesh } from "./stl";
 import { totalVolume, unionBounds } from "./transform";
+import { getPrinter, type PrinterProfile } from "./profiles";
 
 /**
- * Export .pm7 pro Anycubic Photon Mono M7.
+ * Export souborů pro SLA tiskárny (Anycubic .pm7/.pwsz aj.).
  * Formát rozluštěn z UVtools zdrojáku (AnycubicZipFile.cs, AnycubicFile.cs)
  * a reálného vzorku Chituboxu (2026-08-25).
  *
@@ -13,23 +14,13 @@ import { totalVolume, unionBounds } from "./transform";
  *  - layers_controller.conf        (JSON — per-vrstva expozice)
  *  - print_info.json               (JSON)
  *  - software_info.conf            (JSON)
- *  - scene.slice                   (binární — hlavička + per-vrstva 60 B)
- *  - layer_images/layer_N.pw0Img   (RLE4 obraz v plném rozlišení 13312×5120)
+ *  - scene.slice                   (binární — hlavička + per-vrstva 64 B)
+ *  - layer_images/layer_N.pw0Img   (RLE4 obraz v plném rozlišení)
  *  - preview_images/preview_0.png, preview_1.png
  */
 
-export const M7_MACHINE = {
-  name: "Anycubic Photon Mono M7",
-  keySuffix: "pm7",
-  keyImageFormat: "pwszImg",
-  resX: 13312,
-  resY: 5120,
-  printX: 223.64, // mm
-  printY: 126.48, // mm
-  printZ: 230, // mm
-  pixelXUm: 16.8,
-  pixelYUm: 24.8,
-};
+/** Výchozí stroj (Anycubic Photon Mono M7) — použije se, když není zadán. */
+export const M7_MACHINE: PrinterProfile = getPrinter("m7");
 
 // ------------------------------------------------------------- RLE4 (PW0)
 
@@ -85,21 +76,20 @@ export function encodeRlePw0(data: Uint8Array): Uint8Array {
 }
 
 /**
- * Up-scale vrstvy na plné rozlišení M7 (13312×5120) a zakóduje RLE4
- * PŘÍMO (streaming) — bez alokace 68MB bufferu. Malý rastr (1664×640)
- * se rozšíří 8×8; 8 identických strojových řádků se opakuje 8×.
+ * Up-scale vrstvy na plné rozlišení tiskárny a zakóduje RLE4 PŘÍMO (streaming).
+ * Předpokládá, že rozlišení slice dělí rozlišení stroje beze zbytku (scale = 8/4/2/1).
  */
 function encodeLayerToMachine(
   layer: { data: Uint8Array },
-  slice: SliceResult
+  slice: SliceResult,
+  machine: PrinterProfile
 ): Uint8Array {
-  const sx = M7_MACHINE.resX / slice.resolutionX; // 8
-  const sy = M7_MACHINE.resY / slice.resolutionY; // 8
+  const sx = machine.resX / slice.resolutionX;
+  const sy = machine.resY / slice.resolutionY;
   const src = layer.data;
   const w = rleWriter();
 
   for (let y = 0; y < slice.resolutionY; y++) {
-    // runy jedné malé řádky, přepočítané na strojové pixely
     const runs: { color: number; len: number }[] = [];
     let c = src[y * slice.resolutionX] ? 0xf : 0;
     let len = 1;
@@ -114,7 +104,6 @@ function encodeLayerToMachine(
     }
     runs.push({ color: c, len: len * sx });
 
-    // 8 identických strojových řádků
     for (let r = 0; r < sy; r++) {
       for (const run of runs) w.push(run.color, run.len);
     }
@@ -126,9 +115,6 @@ function encodeLayerToMachine(
 
 class BinWriter {
   buf: number[] = [];
-  u8(...v: number[]) {
-    for (const x of v) this.buf.push(x & 0xff);
-  }
   u32(v: number) {
     this.buf.push(v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255);
   }
@@ -156,21 +142,17 @@ interface SceneLayerInfo {
   y1: number;
 }
 
-/**
- * Serializace scene.slice (SceneManifest):
- * magic 16 B, software 64 B, hlavička (uinty/floaty), padding 64×uint,
- * "<---", LayerDefCount, per-vrstva 60 B, "--->".
- */
 export function encodeSceneSlice(
   opts: {
     layerCount: number;
     bounds: StlMesh["bounds"];
     layers: SceneLayerInfo[];
-  }
+  },
+  machine: PrinterProfile
 ): Uint8Array {
   const w = new BinWriter();
-  const cx = M7_MACHINE.printX / 2;
-  const cy = M7_MACHINE.printY / 2;
+  const cx = machine.printX / 2;
+  const cy = machine.printY / 2;
   const { min, max } = opts.bounds;
 
   w.str(16, "ANYCUBIC-PWSZ");
@@ -208,12 +190,11 @@ export function encodeSceneSlice(
 
 // ------------------------------------------------------------- JSON soubory
 
-function buildPwsp() {
-  const m = M7_MACHINE;
+function buildPwsp(machine: PrinterProfile) {
   return {
     machine_extern: {
       active_resins: ["user_resin"],
-      alias: m.name,
+      alias: `${machine.brand} ${machine.name}`,
       cloud_property: 0,
       device_cn_code: "",
       user_resins: [
@@ -267,16 +248,16 @@ function buildPwsp() {
       version: "2",
     },
     machine_type: {
-      name: m.name,
-      key_image_format: m.keyImageFormat,
-      key_suffix: m.keySuffix,
-      res_x: m.resX,
-      res_y: m.resY,
-      print_xsize: m.printX,
-      print_ysize: m.printY,
-      print_zsize: m.printZ,
-      xy_pixel: 16.8,
-      xy_pixel_y: 24.7,
+      name: `${machine.brand} ${machine.name}`,
+      key_image_format: machine.keyImageFormat,
+      key_suffix: machine.keySuffix,
+      res_x: machine.resX,
+      res_y: machine.resY,
+      print_xsize: machine.printX,
+      print_ysize: machine.printY,
+      print_zsize: machine.printZ,
+      xy_pixel: machine.pixelXUm,
+      xy_pixel_y: machine.pixelYUm,
       raster_antialiasing: 4,
       raster_segments_capacity: 100000,
       prev_image_size: [224, 168],
@@ -285,7 +266,7 @@ function buildPwsp() {
       prev_supports_color: [0.07421875, 0.92578125, 0.9296875],
       prev2_image_size: [336, 252],
       prev2_back_color: [0.07843, 0.10588, 0.16078],
-      child_screen: [{ height: m.resY, width: m.resX, x: 0, y: 0 }],
+      child_screen: [{ height: machine.resY, width: machine.resX, x: 0, y: 0 }],
       property: 119,
       max_file_version: 518,
       max_samples: 16,
@@ -295,10 +276,7 @@ function buildPwsp() {
   };
 }
 
-function buildLayersController(
-  slice: SliceResult,
-  layerTimes: number[]
-) {
+function buildLayersController(slice: SliceResult, layerTimes: number[]) {
   return {
     count: slice.layers.length,
     paras: slice.layers.map((l, i) => ({
@@ -329,7 +307,6 @@ async function makePreviewPng(
   w: number,
   h: number
 ): Promise<Uint8Array> {
-  // fallback pro Node testy (bez document) — 1×1 PNG
   if (typeof document === "undefined") {
     return new Uint8Array(
       Buffer.from(
@@ -364,35 +341,33 @@ async function makePreviewPng(
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-// ------------------------------------------------------------- sestavení .pm7
+// ------------------------------------------------------------- sestavení souboru
 
 export interface Pm7Options {
-  /** jméno modelu (bez přípony) — určuje název souboru */
   modelName?: string;
-  /** expozice prvních vrstev (s) */
   bottomExposure?: number;
-  /** expozice běžných vrstev (s) */
   normalExposure?: number;
-  /** počet prvních vrstev */
   bottomLayers?: number;
+  /** tiskárna — default Anycubic M7 */
+  printer?: PrinterProfile;
 }
 
 /**
- * Sestaví kompletní .pm7 soubor (Uint8Array) z meshes a slice výsledku.
- * Vrstvy se up-scalují do plného rozlišení M7 (13312×5120) a kódují RLE4.
+ * Sestaví kompletní tiskový soubor (Uint8Array) z meshes a slice výsledku.
+ * Vrstvy se up-scalují do plného rozlišení tiskárny a kódují RLE4.
  */
 export async function buildPm7(
   meshes: StlMesh[],
   slice: SliceResult,
   opts: Pm7Options = {}
 ): Promise<Uint8Array> {
+  const machine = opts.printer ?? M7_MACHINE;
   const bottomExposure = opts.bottomExposure ?? 25;
   const normalExposure = opts.normalExposure ?? 2.5;
   const bottomLayers = opts.bottomLayers ?? 5;
 
-  // per-vrstva info pro scene.slice
-  const pxMm = M7_MACHINE.printX / M7_MACHINE.resX;
-  const pyMm = M7_MACHINE.printY / M7_MACHINE.resY;
+  const pxMm = machine.printX / machine.resX;
+  const pyMm = machine.printY / machine.resY;
   const layerInfo: SceneLayerInfo[] = slice.layers.map((l) => {
     const src = l.data;
     let count = 0;
@@ -417,18 +392,15 @@ export async function buildPm7(
     return { z: l.z, areaMm2, x0, y0, x1, y1 };
   });
 
-  // expozice per vrstva
   const layerTimes = slice.layers.map((_, i) =>
     i < bottomLayers ? bottomExposure : normalExposure
   );
 
-  // RLE vrstvy (plné rozlišení)
   const rleLayers: Uint8Array[] = [];
   for (const l of slice.layers) {
-    rleLayers.push(encodeLayerToMachine(l, slice));
+    rleLayers.push(encodeLayerToMachine(l, slice, machine));
   }
 
-  // preview PNG
   const mid = Math.floor(slice.layers.length / 2);
   const [preview0, preview1] = await Promise.all([
     makePreviewPng(slice, 0, 224, 168),
@@ -436,21 +408,14 @@ export async function buildPm7(
   ]);
 
   const volumeMl = totalVolume(meshes) / 1000;
-
-  const printTimeS = Math.round(
-    slice.layers.length * 10 // hrubý odhad ~10 s na vrstvu
-  );
+  const printTimeS = Math.round(slice.layers.length * 10);
 
   const files: Record<string, Uint8Array> = {
-    "anycubic_photon_resins.pwsp": strToU8(
-      JSON.stringify(buildPwsp(), null, 4)
-    ),
+    "anycubic_photon_resins.pwsp": strToU8(JSON.stringify(buildPwsp(machine), null, 4)),
     "layers_controller.conf": strToU8(
       JSON.stringify(buildLayersController(slice, layerTimes), null, 4)
     ),
-    "print_info.json": strToU8(
-      JSON.stringify(buildPrintInfo(volumeMl, printTimeS))
-    ),
+    "print_info.json": strToU8(JSON.stringify(buildPrintInfo(volumeMl, printTimeS))),
     "software_info.conf": strToU8(
       JSON.stringify(
         { mark: "CHITUBOX", opengl: "3.3-CoreProfile", os: "win-64", version: "1.2.3" },
@@ -458,11 +423,14 @@ export async function buildPm7(
         4
       )
     ),
-    "scene.slice": encodeSceneSlice({
-      layerCount: slice.layers.length,
-      bounds: unionBounds(meshes),
-      layers: layerInfo,
-    }),
+    "scene.slice": encodeSceneSlice(
+      {
+        layerCount: slice.layers.length,
+        bounds: unionBounds(meshes),
+        layers: layerInfo,
+      },
+      machine
+    ),
     "preview_images/preview_0.png": preview0,
     "preview_images/preview_1.png": preview1,
   };
@@ -470,8 +438,5 @@ export async function buildPm7(
     files[`layer_images/layer_${i}.pw0Img`] = rleLayers[i];
   });
 
-  // hranice s fflate: TS 5.7 generické Uint8Array vs. typy knihovny
-  return zipSync(
-    files as unknown as Record<string, Uint8Array<ArrayBuffer>>
-  );
+  return zipSync(files as unknown as Record<string, Uint8Array<ArrayBuffer>>);
 }
