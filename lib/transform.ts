@@ -113,3 +113,27 @@ export function totalVolume(meshes: StlMesh[]): number {
   }
   return vol;
 }
+
+/** Vejde se model (po transformaci) do tiskové vany? (mm) */
+export function fitsInVat(
+  mesh: StlMesh,
+  t: ModelTransform,
+  vat: { x: number; y: number; z: number }
+): boolean {
+  const m = applyTransform(mesh, t);
+  const { min, max } = m.bounds;
+  return (
+    min[0] >= -vat.x / 2 &&
+    max[0] <= vat.x / 2 &&
+    min[1] >= -vat.y / 2 &&
+    max[1] <= vat.y / 2 &&
+    min[2] >= 0 &&
+    max[2] <= vat.z
+  );
+}
+
+/** Posune mesh tak, aby stála na desce (minZ = 0). */
+export function normalizeToPlate(mesh: StlMesh): StlMesh {
+  const shift = mesh.bounds.min[2];
+  return shift === 0 ? mesh : translateMesh(mesh, 0, 0, -shift);
+}

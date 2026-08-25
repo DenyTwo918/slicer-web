@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Viewport from "@/components/Viewport";
 import LayerPreview from "@/components/LayerPreview";
 import { parseStl, type StlMesh } from "@/lib/stl";
@@ -17,6 +17,8 @@ import {
   rotateMesh,
   scaleMesh,
   totalVolume,
+  fitsInVat,
+  normalizeToPlate,
   DEFAULT_TRANSFORM,
   type ModelTransform,
 } from "@/lib/transform";
@@ -255,7 +257,10 @@ export default function Home() {
       const rx = axis === "x" ? 90 : 0;
       const ry = axis === "y" ? 90 : 0;
       const rz = axis === "z" ? 90 : 0;
-      updateModel(selectedId, (m) => ({ ...m, mesh: rotateMesh(m.mesh, rx, ry, rz) }));
+      updateModel(selectedId, (m) => {
+        const rotated = rotateMesh(m.mesh, rx, ry, rz);
+        return { ...m, mesh: normalizeToPlate(rotated) };
+      });
     },
     [selectedId, models, updateModel]
   );
@@ -283,7 +288,7 @@ export default function Home() {
     if (!item) return;
     const best = findBestOrientation(item.mesh, 15);
     const rotated = orientRotate(item.mesh, best.rx, best.ry, best.rz);
-    updateModel(selectedId, (m) => ({ ...m, mesh: rotated }));
+    updateModel(selectedId, (m) => ({ ...m, mesh: normalizeToPlate(rotated) }));
     showToast("ok", `Model natočen ✓ (X ${best.rx}°, Y ${best.ry}°)`);
   }, [selectedId, models, updateModel]);
 
@@ -359,6 +364,22 @@ export default function Home() {
   const volMl = totalVolume(models.map((m) => applyTransform(m.mesh, m.transform))) / 1000;
   const selStats: MeshStats | null = selected ? meshStats(selected.mesh) : null;
 
+  const viewModels = useMemo(
+    () =>
+      models.map((m) => ({
+        id: m.id,
+        mesh: m.mesh,
+        transform: m.transform,
+        fits: fitsInVat(m.mesh, m.transform, {
+          x: printer.printX,
+          y: printer.printY,
+          z: printer.printZ,
+        }),
+      })),
+    [models, printer]
+  );
+  const allFit = viewModels.every((m) => m.fits);
+
   return (
     <div className="page">
       <header>
@@ -386,9 +407,10 @@ export default function Home() {
       <div className="workspace">
         <div className="viewport">
           <Viewport
-            models={models.map((m) => ({ id: m.id, mesh: m.mesh, transform: m.transform }))}
+            models={viewModels}
             selectedId={selectedId}
             onMove={onMove}
+            printer={printer}
           />
         </div>
 
@@ -585,6 +607,18 @@ export default function Home() {
             <div className="info-row">
               <span>Modely</span>
               <b>{models.length}</b>
+            </div>
+            <div className="info-row">
+              <span>Vana (X×Y×Z)</span>
+              <b>
+                {printer.printX.toFixed(0)} × {printer.printY.toFixed(0)} × {printer.printZ.toFixed(0)} mm
+              </b>
+            </div>
+            <div className="info-row">
+              <span>Vejde se do vany</span>
+              <b className={allFit ? "" : "fit-bad"}>
+                {allFit ? "✓ ano" : "✗ něco přesahuje (červeně)"}
+              </b>
             </div>
             <div className="info-row">
               <span>Objem celkem</span>

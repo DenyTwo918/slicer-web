@@ -1,16 +1,18 @@
 "use client";
 
 import { Canvas, useThree } from "@react-three/fiber";
-import { OrbitControls, Grid, TransformControls } from "@react-three/drei";
+import { OrbitControls, Grid, TransformControls, Edges } from "@react-three/drei";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { StlMesh } from "@/lib/stl";
 import type { ModelTransform } from "@/lib/transform";
+import type { PrinterProfile } from "@/lib/profiles";
 
 interface ViewModel {
   id: number;
   mesh: StlMesh;
   transform: ModelTransform;
+  fits: boolean;
 }
 
 function Model({ mesh, color }: { mesh: StlMesh; color: string }) {
@@ -37,15 +39,33 @@ function Model({ mesh, color }: { mesh: StlMesh; color: string }) {
   );
 }
 
-/** Po první přidání modelu natočí kameru na celou desku. */
-function FrameScene({ count }: { count: number }) {
+/** Virtuální vana (build volume) tiskárny — průhledný box s hranami. */
+function BuildVolume({ printer }: { printer: PrinterProfile }) {
+  return (
+    <group position={[0, 0, printer.printZ / 2]}>
+      <mesh>
+        <boxGeometry args={[printer.printX, printer.printY, printer.printZ]} />
+        <meshBasicMaterial
+          color="#3b82f6"
+          transparent
+          opacity={0.05}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+        <Edges scale={1} color="#60a5fa" />
+      </mesh>
+    </group>
+  );
+}
+
+/** Kamera na celou vanu (při startu / změně tiskárny). */
+function FrameVat({ printer }: { printer: PrinterProfile }) {
   const camera = useThree((s) => s.camera);
   useEffect(() => {
-    if (count === 1) {
-      camera.position.set(150, 120, 240);
-      camera.lookAt(0, 30, 0);
-    }
-  }, [count, camera]);
+    const s = Math.max(printer.printX, printer.printY);
+    camera.position.set(s * 0.85, s * 0.7, s * 1.05);
+    camera.lookAt(0, printer.printZ * 0.3, 0);
+  }, [printer, camera]);
   return null;
 }
 
@@ -53,17 +73,19 @@ export default function Viewport({
   models,
   selectedId,
   onMove,
+  printer,
 }: {
   models: ViewModel[];
   selectedId: number | null;
   onMove: (id: number, x: number, y: number) => void;
+  printer: PrinterProfile;
 }) {
   const selectedRef = useRef<THREE.Group>(null);
   const orbitRef = useRef<any>(null);
   const [orbitEnabled, setOrbitEnabled] = useState(true);
 
   return (
-    <Canvas shadows camera={{ position: [150, 120, 240], fov: 45 }}>
+    <Canvas shadows camera={{ position: [200, 160, 260], fov: 45 }}>
       <ambientLight intensity={0.7} />
       <directionalLight position={[120, 180, 90]} intensity={1.4} castShadow />
       <hemisphereLight intensity={0.35} />
@@ -75,18 +97,26 @@ export default function Viewport({
         sectionSize={25}
         sectionThickness={1.1}
         sectionColor="#94a3b8"
-        fadeDistance={400}
+        fadeDistance={600}
         infiniteGrid
       />
-      {models.map((m) => (
-        <group
-          key={m.id}
-          ref={m.id === selectedId ? selectedRef : undefined}
-          position={[m.transform.x, m.transform.y, 0]}
-        >
-          <Model mesh={m.mesh} color={m.id === selectedId ? "#f59e0b" : "#4f8ef7"} />
-        </group>
-      ))}
+
+      <BuildVolume printer={printer} />
+
+      {models.map((m) => {
+        let color = "#4f8ef7";
+        if (m.id === selectedId) color = "#f59e0b";
+        else if (!m.fits) color = "#ef4444"; // přesahuje vanu
+        return (
+          <group
+            key={m.id}
+            ref={m.id === selectedId ? selectedRef : undefined}
+            position={[m.transform.x, m.transform.y, 0]}
+          >
+            <Model mesh={m.mesh} color={color} />
+          </group>
+        );
+      })}
 
       {selectedId !== null && (
         <TransformControls
@@ -104,7 +134,7 @@ export default function Viewport({
         />
       )}
 
-      <FrameScene count={models.length} />
+      <FrameVat printer={printer} />
       <OrbitControls
         ref={orbitRef}
         makeDefault
