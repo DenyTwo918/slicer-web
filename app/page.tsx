@@ -371,6 +371,15 @@ export default function Home() {
     setSliceResult(null);
   }, [selectedId]);
 
+  const removeModel = useCallback(
+    (id: number) => {
+      setModels((prev) => prev.filter((m) => m.id !== id));
+      if (selectedId === id) setSelectedId(null);
+      setSliceResult(null);
+    },
+    [selectedId]
+  );
+
   const duplicateSel = useCallback(() => {
     if (!selectedId) return;
     const item = models.find((m) => m.id === selectedId);
@@ -743,14 +752,14 @@ export default function Home() {
         {models.length > 0 && (
           <div className="model-strip">
             {models.map((m) => (
-              <button
-                key={m.id}
-                className={`model-chip ${m.id === selectedId ? "active" : ""}`}
-                onClick={() => setSelectedId(m.id)}
-                title="Klikni pro výběr"
-              >
-                {m.name}
-              </button>
+              <div key={m.id} className={`model-chip ${m.id === selectedId ? "active" : ""}`}>
+                <button className="chip-name" onClick={() => setSelectedId(m.id)} title="Klikni pro výběr">
+                  {m.name}
+                </button>
+                <button className="chip-x" onClick={() => removeModel(m.id)} title="Odebrat model">
+                  ×
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -760,7 +769,7 @@ export default function Home() {
             className={`drop-hint ${dragOver ? "dragging" : ""}`}
             onClick={() => fileRef.current?.click()}
           >
-            <div className="drop-big">Přetáhni svůj STL sem</div>
+            <div className="drop-big">Přetáhni svůj model sem</div>
             <div className="drop-small">
               …nebo klikni na „Přidat model" · nemáš model? „Demo" / „Krychle"
             </div>
@@ -769,51 +778,6 @@ export default function Home() {
 
         {models.length > 0 && (
           <div className="toolbar">
-            <button className="btn btn-small btn-primary" onClick={orientSel} disabled={!selected}>
-              Narovnej
-            </button>
-            <button className="btn btn-small btn-primary" onClick={standUpSel} disabled={!selected}>
-              Postav
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={() => rotateSel("x")} disabled={!selected}>
-              Otoč X 90°
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={() => rotateSel("y")} disabled={!selected}>
-              Otoč Y 90°
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={() => rotateSel("z")} disabled={!selected}>
-              Otoč Z 90°
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={() => scaleSel(1.1)} disabled={!selected}>
-              +10 %
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={() => scaleSel(0.9)} disabled={!selected}>
-              −10 %
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={resetSel} disabled={!selected}>
-              Vrať
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={duplicateSel} disabled={!selected}>
-              Duplikovat
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={centerSel} disabled={!selected}>
-              Centrovat
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={downloadSelStl} disabled={!selected}>
-              STL
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={() => mirrorSel("x")} disabled={!selected}>
-              Zrcad X
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={() => mirrorSel("y")} disabled={!selected}>
-              Zrcad Y
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={arrangeAll} disabled={models.length < 2}>
-              Rozmístit
-            </button>
-            <button className="btn btn-small btn-ghost" onClick={screenshot3d}>
-              Foto
-            </button>
             <button className="btn btn-small btn-green" onClick={doSlice} disabled={slicing || models.length === 0}>
               {slicing ? "Slicuji…" : "Slicovat"}
             </button>
@@ -829,6 +793,72 @@ export default function Home() {
             >
               Nastavení
             </button>
+          </div>
+        )}
+
+        {selected && (
+          <div className="model-panel">
+            <div className="mp-title">Model: {selected.name}</div>
+            <div className="mp-row">
+              <button className="mp-btn mp-primary" onClick={orientSel}>
+                Narovnej
+              </button>
+              <button className="mp-btn" onClick={standUpSel}>
+                Postav
+              </button>
+              <button className="mp-btn" onClick={resetSel}>
+                Vrať
+              </button>
+              <button className="mp-btn" onClick={duplicateSel}>
+                Duplikovat
+              </button>
+              <button className="mp-btn mp-danger" onClick={removeSel}>
+                Smaž
+              </button>
+            </div>
+            <div className="mp-row">
+              <button className="mp-btn" onClick={() => rotateSel("x")}>
+                Otoč X
+              </button>
+              <button className="mp-btn" onClick={() => rotateSel("y")}>
+                Otoč Y
+              </button>
+              <button className="mp-btn" onClick={() => rotateSel("z")}>
+                Otoč Z
+              </button>
+              <button className="mp-btn" onClick={() => scaleSel(0.9)}>
+                −10 %
+              </button>
+              <button className="mp-btn" onClick={() => scaleSel(1.1)}>
+                +10 %
+              </button>
+              <button className="mp-btn" onClick={() => mirrorSel("x")}>
+                Zrcad X
+              </button>
+              <button className="mp-btn" onClick={() => mirrorSel("y")}>
+                Zrcad Y
+              </button>
+              <button className="mp-btn" onClick={() => mirrorSel("z")}>
+                Zrcad Z
+              </button>
+            </div>
+            <div className="mp-row">
+              <button className="mp-btn" onClick={centerSel}>
+                Centrovat
+              </button>
+              <button className="mp-btn" onClick={downloadSelStl}>
+                STL
+              </button>
+              <button className="mp-btn" onClick={screenshot3d}>
+                Foto
+              </button>
+              {models.length > 1 && (
+                <button className="mp-btn" onClick={arrangeAll}>
+                  Rozmístit
+                </button>
+              )}
+              <span className="mp-hint">Přesun: 3D šipky · klávesnice šipky = ±5 mm</span>
+            </div>
           </div>
         )}
 
@@ -899,6 +929,8 @@ export default function Home() {
                 }
               />
             </label>
+            <details open>
+              <summary>Základní</summary>
             <label className="set-row">
               <span>Výška vrstvy</span>
               <select
@@ -941,6 +973,9 @@ export default function Home() {
                 onChange={(e) => setSettings((s) => ({ ...s, normalExposure: Number(e.target.value) }))}
               />
             </label>
+            </details>
+            <details>
+              <summary>Podpory a kvalita</summary>
             <label className="set-row check">
               <input
                 type="checkbox"
@@ -980,6 +1015,9 @@ export default function Home() {
                 onChange={(e) => setSettings((s) => ({ ...s, aa: e.target.checked }))}
               />
             </label>
+            </details>
+            <details>
+              <summary>Hollowing</summary>
             <label className="set-row check">
               <input
                 type="checkbox"
@@ -1020,6 +1058,9 @@ export default function Home() {
                 </label>
               </>
             )}
+            </details>
+            <details>
+              <summary>Raft</summary>
             <label className="set-row check">
               <input
                 type="checkbox"
@@ -1052,6 +1093,9 @@ export default function Home() {
                 </label>
               </>
             )}
+            </details>
+            <details>
+              <summary>Zvedání</summary>
             <label className="set-row">
               <span>Zvednutí (mm)</span>
               <input
@@ -1092,6 +1136,7 @@ export default function Home() {
                 onChange={(e) => setSettings((s) => ({ ...s, zupSpeedBottom: Number(e.target.value) }))}
               />
             </label>
+            </details>
             <p className="info-note">
               Zkratky: O narovnej · S slicuj · E export · P poslat · D duplikovat · C centrovat ·
               M zrcadlit X · šipky = posun 5 mm · R vrátit
