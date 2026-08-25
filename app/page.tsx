@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Viewport from "@/components/Viewport";
 import LayerPreview from "@/components/LayerPreview";
 import { parseStl, type StlMesh } from "@/lib/stl";
+import { parseObj } from "@/lib/obj";
 import { makeTorus, makeBox } from "@/lib/demo";
 import {
   findBestOrientation,
@@ -197,8 +198,13 @@ export default function Home() {
       setLoading(true);
       for (const file of Array.from(files)) {
         try {
-          const buf = await file.arrayBuffer();
-          const m = parseStl(buf);
+          const name = file.name.toLowerCase();
+          let m: StlMesh;
+          if (name.endsWith(".obj")) {
+            m = parseObj(await file.text());
+          } else {
+            m = parseStl(await file.arrayBuffer());
+          }
           addModel(m, file.name);
         } catch (e) {
           showToast("err", e instanceof Error ? e.message : "Nepodařilo se načíst soubor.", 8000);
@@ -211,6 +217,19 @@ export default function Home() {
 
   const loadDemo = useCallback(() => addModel(makeTorus(), "demo (donut)"), [addModel]);
   const loadCube = useCallback(() => addModel(makeBox(), "krychle 40×40×60"), [addModel]);
+
+  const clearAll = useCallback(() => {
+    setModels([]);
+    setSelectedId(null);
+    setSliceResult(null);
+    setLastExport(null);
+    showToast("ok", "Vše smazáno");
+  }, []);
+
+  const [light, setLight] = useState(false);
+  useEffect(() => {
+    document.documentElement.dataset.theme = light ? "light" : "dark";
+  }, [light]);
 
   // drag & drop kamkoli
   useEffect(() => {
@@ -661,6 +680,14 @@ export default function Home() {
               Smazat vybraný
             </button>
           )}
+          {models.length > 0 && (
+            <button className="btn btn-small btn-danger" onClick={clearAll}>
+              Smazat vše
+            </button>
+          )}
+          <button className="btn btn-small btn-ghost" onClick={() => setLight((l) => !l)}>
+            {light ? "Tmavý" : "Světlý"}
+          </button>
         </div>
       </header>
 
@@ -1137,7 +1164,7 @@ export default function Home() {
       <input
         ref={fileRef}
         type="file"
-        accept=".stl"
+        accept=".stl,.obj"
         multiple
         style={{ display: "none" }}
         onChange={(e) => {
@@ -1148,3 +1175,4 @@ export default function Home() {
     </div>
   );
 }
+
