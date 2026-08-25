@@ -27,6 +27,7 @@ import { sliceMesh, unionSlices, type SliceResult } from "@/lib/slice";
 import { generateSupports } from "@/lib/supports";
 import { applyAA } from "@/lib/aa";
 import { buildPm7 } from "@/lib/pm7";
+import { sendPrintToPrinter, getStoredJwt, setStoredJwt } from "@/lib/anycubic";
 import {
   PRINTERS,
   RESINS,
@@ -117,6 +118,8 @@ export default function Home() {
   const [sliceIdx, setSliceIdx] = useState(0);
   const [slicing, setSlicing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [lastExport, setLastExport] = useState<{ bytes: Uint8Array; name: string } | null>(null);
   const [showInfo, setShowInfo] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -363,6 +366,7 @@ export default function Home() {
         }
       );
       downloadBytes(bytes, `tisk.${printer.keySuffix}`);
+      setLastExport({ bytes, name: `tisk.${printer.keySuffix}` });
       showToast("ok", "Soubor .pm7 stažen ✓ · USB: kořen disku, ≤15 znaků, FAT32", 10000);
     } catch (e) {
       showToast("err", e instanceof Error ? e.message : "Export .pm7 selhal.", 8000);
@@ -370,6 +374,35 @@ export default function Home() {
       setExporting(false);
     }
   }, [sliceResult, models, settings, printer]);
+
+  const sendToPrinter = useCallback(async () => {
+    if (!lastExport) return;
+    let jwt = getStoredJwt();
+    if (!jwt) {
+      const input = prompt(
+        "Vlož Anycubic access token.\n" +
+          "(najdeš ho na PC v AppData\\Local\\Anycubic\\AnycubicPhotonWorkshop_V4.1.8\\global_config.ini, řádek accessToken=...)"
+      );
+      if (!input) return;
+      jwt = input.trim();
+      setStoredJwt(jwt);
+    }
+    setSending(true);
+    try {
+      const fileId = await sendPrintToPrinter(lastExport.bytes, lastExport.name, jwt, (msg) =>
+        showToast("ok", msg, 6000)
+      );
+      showToast(
+        "ok",
+        `Soubor poslán do tiskárny ✓ (file ${fileId}) · tiskárna stahuje · tisk potvrď na displeji tiskárny`,
+        15000
+      );
+    } catch (e) {
+      showToast("err", e instanceof Error ? e.message : "Odeslání do tiskárny selhalo.", 10000);
+    } finally {
+      setSending(false);
+    }
+  }, [lastExport]);
 
   const volMl = totalVolume(models.map((m) => applyTransform(m.mesh, m.transform))) / 1000;
   const selStats: MeshStats | null = selected ? meshStats(selected.mesh) : null;
@@ -484,6 +517,11 @@ export default function Home() {
             {sliceResult && (
               <button className="btn btn-small btn-green" onClick={exportPm7} disabled={exporting}>
                 {exporting ? "Generuji…" : "Export .pm7"}
+              </button>
+            )}
+            {lastExport && (
+              <button className="btn btn-small btn-green" onClick={sendToPrinter} disabled={sending}>
+                {sending ? "Posílám…" : "Poslat do tiskárny (WiFi)"}
               </button>
             )}
             <button
