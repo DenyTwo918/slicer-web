@@ -167,6 +167,8 @@ export default function Home() {
           layerHeight: 0.1,
           resolutionX: 1664, // 13312 / 8 (poměr desky M7)
           resolutionY: 640, // 5120 / 8
+          plateW: 223.64, // deska M7 (mm)
+          plateH: 126.48,
         });
         setSliceResult(res);
         setSliceIdx(0);

@@ -6,6 +6,9 @@ export interface SliceOptions {
   /** Rozlišení obrázku vrstvy (px) */
   resolutionX: number;
   resolutionY: number;
+  /** Velikost tiskové desky v mm — rastr = deska, model se vycentruje */
+  plateW?: number;
+  plateH?: number;
 }
 
 export interface Layer {
@@ -36,8 +39,13 @@ export function sliceMesh(mesh: StlMesh, opts: SliceOptions): SliceResult {
   const { min, max } = mesh.bounds;
   const height = Math.max(max[2] - min[2], 1e-6);
   const numLayers = Math.max(1, Math.floor(height / opts.layerHeight));
-  const pxPerMmX = opts.resolutionX / Math.max(max[0] - min[0], 1e-6);
-  const pxPerMmY = opts.resolutionY / Math.max(max[1] - min[1], 1e-6);
+  // rastr = tisková deska; model vycentrovaný (pokud deska zadána, jinak = bounds modelu)
+  const plateW = opts.plateW ?? Math.max(max[0] - min[0], 1e-6);
+  const plateH = opts.plateH ?? Math.max(max[1] - min[1], 1e-6);
+  const pxPerMmX = opts.resolutionX / plateW;
+  const pxPerMmY = opts.resolutionY / plateH;
+  const offsetX = (plateW - (max[0] - min[0])) / 2 - min[0];
+  const offsetY = (plateH - (max[1] - min[1])) / 2 - min[1];
 
   const layers: Layer[] = [];
   const positions = mesh.positions;
@@ -75,10 +83,10 @@ export function sliceMesh(mesh: StlMesh, opts: SliceOptions): SliceResult {
     const resY = opts.resolutionY;
     const crossings: number[][] = Array.from({ length: resY }, () => []);
     for (const s of segs) {
-      let x1 = (s[0] - min[0]) * pxPerMmX;
-      let y1 = (s[1] - min[1]) * pxPerMmY;
-      let x2 = (s[2] - min[0]) * pxPerMmX;
-      let y2 = (s[3] - min[1]) * pxPerMmY;
+      let x1 = (s[0] + offsetX) * pxPerMmX;
+      let y1 = (s[1] + offsetY) * pxPerMmY;
+      let x2 = (s[2] + offsetX) * pxPerMmX;
+      let y2 = (s[3] + offsetY) * pxPerMmY;
       if (y1 > y2) {
         const tx = x1; const ty = y1;
         x1 = x2; y1 = y2; x2 = tx; y2 = ty;

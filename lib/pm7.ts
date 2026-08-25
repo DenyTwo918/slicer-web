@@ -33,11 +33,10 @@ export const M7_MACHINE = {
 // ------------------------------------------------------------- RLE4 (PW0)
 
 /**
- * Kóduje 8bitový obraz (0..255) do RLE4 (pw0Img):
- * barva = pixel >> 4; runy barvy 0/0xf se píší jako 2 B big-endian
- * [color<<12 | done], limit 4095; ostatní barvy 1 B [color<<4 | done], limit 15.
+ * Writer RLE4: barva = pixel >> 4; runy barvy 0/0xf se píší 2 B big-endian
+ * [color<<12 | done] s limitem 4095; ostatní barvy 1 B [color<<4 | done], limit 15.
  */
-export function encodeRlePw0(data: Uint8Array): Uint8Array {
+function rleWriter() {
   const out: number[] = [];
   let lastColor = -1;
   let reps = 0;
@@ -47,8 +46,7 @@ export function encodeRlePw0(data: Uint8Array): Uint8Array {
       if (color === 0 || color === 0xf) {
         const done = Math.min(count, 4095);
         const more = done | (color << 12);
-        out.push((more >> 8) & 0xff);
-        out.push(more & 0xff);
+        out.push((more >> 8) & 0xff, more & 0xff);
         count -= done;
       } else {
         const done = Math.min(count, 15);
@@ -58,44 +56,69 @@ export function encodeRlePw0(data: Uint8Array): Uint8Array {
     }
   };
 
-  for (let i = 0; i < data.length; i++) {
-    const color = data[i] >> 4;
+  const push = (color: number, count: number) => {
     if (color === lastColor) {
-      reps++;
+      reps += count;
     } else {
       put(lastColor, reps);
       lastColor = color;
-      reps = 1;
+      reps = count;
     }
-  }
-  put(lastColor, reps);
-  return new Uint8Array(out);
+  };
+
+  const finish = () => {
+    put(lastColor, reps);
+    return new Uint8Array(out);
+  };
+
+  return { push, finish };
 }
 
-/** Up-scale vrstvy (slice rastr) na plné rozlišení tiskárny a zakóduje RLE. */
+/** Kóduje 8bitový obraz (0..255) do RLE4 (pw0Img). */
+export function encodeRlePw0(data: Uint8Array): Uint8Array {
+  const w = rleWriter();
+  for (let i = 0; i < data.length; i++) {
+    w.push(data[i] >> 4, 1);
+  }
+  return w.finish();
+}
+
+/**
+ * Up-scale vrstvy na plné rozlišení M7 (13312×5120) a zakóduje RLE4
+ * PŘÍMO (streaming) — bez alokace 68MB bufferu. Malý rastr (1664×640)
+ * se rozšíří 8×8; 8 identických strojových řádků se opakuje 8×.
+ */
 function encodeLayerToMachine(
   layer: { data: Uint8Array },
   slice: SliceResult
 ): Uint8Array {
-  const mx = M7_MACHINE.resX;
-  const my = M7_MACHINE.resY;
-  const sx = mx / slice.resolutionX;
-  const sy = my / slice.resolutionY;
-  const full = new Uint8Array(mx * my);
+  const sx = M7_MACHINE.resX / slice.resolutionX; // 8
+  const sy = M7_MACHINE.resY / slice.resolutionY; // 8
   const src = layer.data;
+  const w = rleWriter();
+
   for (let y = 0; y < slice.resolutionY; y++) {
-    const y0 = Math.floor(y * sy);
-    for (let x = 0; x < slice.resolutionX; x++) {
-      if (src[y * slice.resolutionX + x]) {
-        const x0 = Math.floor(x * sx);
-        const x1 = Math.min(mx, x0 + sx);
-        for (let yy = y0; yy < Math.min(my, y0 + sy); yy++) {
-          full.fill(255, yy * mx + x0, yy * mx + x1);
-        }
+    // runy jedné malé řádky, přepočítané na strojové pixely
+    const runs: { color: number; len: number }[] = [];
+    let c = src[y * slice.resolutionX] ? 0xf : 0;
+    let len = 1;
+    for (let x = 1; x < slice.resolutionX; x++) {
+      const nc = src[y * slice.resolutionX + x] ? 0xf : 0;
+      if (nc === c) len++;
+      else {
+        runs.push({ color: c, len: len * sx });
+        c = nc;
+        len = 1;
       }
     }
+    runs.push({ color: c, len: len * sx });
+
+    // 8 identických strojových řádků
+    for (let r = 0; r < sy; r++) {
+      for (const run of runs) w.push(run.color, run.len);
+    }
   }
-  return encodeRlePw0(full);
+  return w.finish();
 }
 
 // ------------------------------------------------------------- scene.slice
@@ -305,6 +328,15 @@ async function makePreviewPng(
   w: number,
   h: number
 ): Promise<Uint8Array> {
+  // fallback pro Node testy (bez document) — 1×1 PNG
+  if (typeof document === "undefined") {
+    return new Uint8Array(
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+        "base64"
+      )
+    );
+  }
   const layer = slice.layers[layerIdx];
   const canvas = document.createElement("canvas");
   canvas.width = w;
