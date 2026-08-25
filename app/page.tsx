@@ -12,6 +12,17 @@ import {
   type MeshStats,
 } from "@/lib/orient";
 import { sliceMesh, type SliceResult } from "@/lib/slice";
+import { buildPm7 } from "@/lib/pm7";
+
+function downloadBytes(bytes: Uint8Array, name: string) {
+  const blob = new Blob([bytes], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function Home() {
   const [mesh, setMesh] = useState<StlMesh | null>(null);
@@ -27,6 +38,7 @@ export default function Home() {
   const [sliceResult, setSliceResult] = useState<SliceResult | null>(null);
   const [sliceIdx, setSliceIdx] = useState(0);
   const [slicing, setSlicing] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const originalRef = useRef<StlMesh | null>(null);
@@ -147,8 +159,8 @@ export default function Home() {
       try {
         const res = sliceMesh(mesh, {
           layerHeight: 0.1,
-          resolutionX: 400,
-          resolutionY: 400,
+          resolutionX: 1664, // 13312 / 8 (poměr desky M7)
+          resolutionY: 640, // 5120 / 8
         });
         setSliceResult(res);
         setSliceIdx(0);
@@ -165,6 +177,25 @@ export default function Home() {
       }
     }, 30);
   }, [mesh]);
+
+  const exportPm7 = useCallback(async () => {
+    if (!mesh || !sliceResult) return;
+    setExporting(true);
+    setError("");
+    try {
+      const bytes = await buildPm7(mesh, sliceResult, { modelName: "model" });
+      const base = fileName.replace(/\.stl$/i, "") || "model";
+      downloadBytes(bytes, `${base}.pm7`);
+      setOrientMsg(
+        "Soubor .pm7 stažen ✓ · zkopíruj ho na USB (kořen, ≤15 znaků, FAT32)"
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export .pm7 selhal.");
+    } finally {
+      setExporting(false);
+      toastTimer.current = setTimeout(clearToast, 10000);
+    }
+  }, [mesh, sliceResult, fileName]);
 
   const pick = () => fileRef.current?.click();
 
@@ -220,6 +251,15 @@ export default function Home() {
             >
               {slicing ? "Slicuji…" : "Slicovat"}
             </button>
+            {sliceResult && (
+              <button
+                className="btn btn-small btn-green"
+                onClick={exportPm7}
+                disabled={exporting}
+              >
+                {exporting ? "Generuji…" : "Export .pm7"}
+              </button>
+            )}
             <button className="btn btn-small btn-ghost" onClick={revert}>
               Vrať zpět
             </button>
