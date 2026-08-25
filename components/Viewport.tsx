@@ -1,7 +1,14 @@
 "use client";
 
 import { Canvas, useThree } from "@react-three/fiber";
-import { OrbitControls, Grid, TransformControls, Edges } from "@react-three/drei";
+import {
+  OrbitControls,
+  Grid,
+  TransformControls,
+  Edges,
+  Environment,
+  ContactShadows,
+} from "@react-three/drei";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { StlMesh } from "@/lib/stl";
@@ -28,19 +35,43 @@ function Model({ mesh, color }: { mesh: StlMesh; color: string }) {
     return g;
   }, [mesh]);
   return (
-    <mesh geometry={geometry} castShadow>
+    <mesh geometry={geometry} castShadow receiveShadow>
       <meshStandardMaterial
         color={color}
-        metalness={0.15}
-        roughness={0.35}
+        metalness={0.2}
+        roughness={0.32}
+        envMapIntensity={0.9}
         side={THREE.DoubleSide}
       />
     </mesh>
   );
 }
 
-/** Virtuální vana (build volume) tiskárny — průhledný box s hranami. */
-function BuildVolume({ printer }: { printer: PrinterProfile }) {
+/** Kovová tisková deska + jemná mřížka. */
+function BuildPlate({ printer }: { printer: PrinterProfile }) {
+  return (
+    <group>
+      <mesh position={[0, 0, -0.5]} receiveShadow>
+        <boxGeometry args={[printer.printX, printer.printY, 1]} />
+        <meshStandardMaterial color="#202733" metalness={0.7} roughness={0.35} />
+      </mesh>
+      <Grid
+        position={[0, 0, 0.01]}
+        args={[printer.printX, printer.printY]}
+        cellSize={5}
+        cellThickness={0.4}
+        cellColor="#2b3442"
+        sectionSize={25}
+        sectionThickness={0.8}
+        sectionColor="#3b4657"
+        fadeDistance={printer.printX * 1.3}
+      />
+    </group>
+  );
+}
+
+/** Virtuální vana (build volume) — jemné sklo + hrany. */
+function Vat({ printer }: { printer: PrinterProfile }) {
   return (
     <group position={[0, 0, printer.printZ / 2]}>
       <mesh>
@@ -48,11 +79,11 @@ function BuildVolume({ printer }: { printer: PrinterProfile }) {
         <meshBasicMaterial
           color="#3b82f6"
           transparent
-          opacity={0.05}
+          opacity={0.04}
           depthWrite={false}
-          side={THREE.DoubleSide}
+          side={THREE.BackSide}
         />
-        <Edges scale={1} color="#60a5fa" />
+        <Edges scale={1} color="#2f4a6b" />
       </mesh>
     </group>
   );
@@ -85,28 +116,35 @@ export default function Viewport({
   const [orbitEnabled, setOrbitEnabled] = useState(true);
 
   return (
-    <Canvas shadows camera={{ position: [200, 160, 260], fov: 45 }}>
-      <ambientLight intensity={0.7} />
-      <directionalLight position={[120, 180, 90]} intensity={1.4} castShadow />
-      <hemisphereLight intensity={0.35} />
-      <Grid
-        position={[0, 0, 0]}
-        cellSize={5}
-        cellThickness={0.6}
-        cellColor="#cbd5e1"
-        sectionSize={25}
-        sectionThickness={1.1}
-        sectionColor="#94a3b8"
-        fadeDistance={600}
-        infiniteGrid
-      />
+    <Canvas
+      shadows
+      dpr={[1, 2]}
+      gl={{ antialias: true }}
+      camera={{ position: [200, 160, 260], fov: 45, near: 1, far: 4000 }}
+    >
+      <color attach="background" args={["#0b0e13"]} />
+      <fog attach="fog" args={["#0b0e13", 900, 2600]} />
 
-      <BuildVolume printer={printer} />
+      {/* studio odrazy (PBR materiály vypadají mnohem líp) */}
+      <Environment preset="studio" />
+
+      <ambientLight intensity={0.4} />
+      <directionalLight
+        position={[140, 200, 100]}
+        intensity={1.4}
+        castShadow
+        shadow-mapSize={[1024, 1024]}
+        shadow-bias={-0.0001}
+      />
+      <directionalLight position={[-100, 60, -80]} intensity={0.35} color="#8ab4ff" />
+
+      <BuildPlate printer={printer} />
+      <Vat printer={printer} />
 
       {models.map((m) => {
-        let color = "#4f8ef7";
-        if (m.id === selectedId) color = "#f59e0b";
-        else if (!m.fits) color = "#ef4444"; // přesahuje vanu
+        let color = "#5b9cf6";
+        if (m.id === selectedId) color = "#f5a524";
+        else if (!m.fits) color = "#ef4444";
         return (
           <group
             key={m.id}
@@ -117,6 +155,15 @@ export default function Viewport({
           </group>
         );
       })}
+
+      <ContactShadows
+        position={[0, 0, 0.02]}
+        opacity={0.45}
+        scale={printer.printX}
+        blur={2.2}
+        far={printer.printZ}
+        resolution={512}
+      />
 
       {selectedId !== null && (
         <TransformControls

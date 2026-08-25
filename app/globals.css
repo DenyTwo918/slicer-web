@@ -1,13 +1,18 @@
 :root {
-  --blue: #2563eb;
-  --blue-dark: #1d4ed8;
-  --green: #16a34a;
-  --bg: #f4f6f9;
-  --card: #ffffff;
-  --text: #111827;
-  --muted: #6b7280;
-  --border: #d8dee6;
-  --danger: #dc2626;
+  --bg: #0b0e13;
+  --bg-panel: #11151c;
+  --card: #161b24;
+  --card2: #1c2330;
+  --text: #e6eaf0;
+  --muted: #8b94a3;
+  --border: #2a3342;
+  --blue: #3b82f6;
+  --blue-dark: #2563eb;
+  --green: #22c55e;
+  --green-dark: #16a34a;
+  --danger: #ef4444;
+  --danger-dark: #b91c1c;
+  --amber: #f5a524;
   --radius: 14px;
 }
 
@@ -41,7 +46,7 @@ body {
 }
 
 header {
-  background: var(--card);
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   padding: 12px 20px;
   display: flex;
@@ -61,6 +66,7 @@ header {
 .actions {
   display: flex;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 /* ---------- 3D workspace ---------- */
@@ -68,7 +74,7 @@ header {
   flex: 1;
   position: relative;
   overflow: hidden;
-  background: linear-gradient(160deg, #eef2ff, #e0e7ff);
+  background: radial-gradient(1200px 700px at 50% 30%, #141a24, #0b0e13);
 }
 .viewport {
   position: absolute;
@@ -82,19 +88,19 @@ header {
   border-radius: 12px;
   cursor: pointer;
   font-weight: 700;
-  transition: background 0.15s, transform 0.05s;
+  transition: background 0.15s, transform 0.05s, box-shadow 0.15s;
 }
 .btn:focus-visible {
-  outline: 4px solid #93c5fd;
+  outline: 3px solid #3b82f6;
   outline-offset: 2px;
 }
 .btn:active {
   transform: translateY(1px);
 }
 .btn-small {
-  font-size: 16px;
-  padding: 10px 20px;
-  min-height: 44px;
+  font-size: 15px;
+  padding: 9px 18px;
+  min-height: 42px;
 }
 .btn-primary {
   background: var(--blue);
@@ -103,30 +109,40 @@ header {
 .btn-primary:hover {
   background: var(--blue-dark);
 }
+.btn-primary:disabled {
+  background: #2a3a56;
+  color: #7c8aa3;
+  cursor: not-allowed;
+}
 .btn-ghost {
-  background: #eef1f5;
+  background: var(--card2);
   color: var(--text);
 }
 .btn-ghost:hover {
-  background: #e2e6ec;
+  background: #242d3b;
+}
+.btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .btn-green {
-  background: var(--green);
+  background: var(--green-dark);
   color: #fff;
 }
 .btn-green:hover {
-  background: #12853a;
+  background: var(--green);
 }
 .btn-green:disabled {
-  background: #86cba4;
+  background: #1f3a2a;
+  color: #6a9a78;
   cursor: not-allowed;
 }
 .btn-danger {
-  background: var(--danger);
+  background: var(--danger-dark);
   color: #fff;
 }
 .btn-danger:hover {
-  background: #b91c1c;
+  background: var(--danger);
 }
 
 /* ---------- nápověda k přetažení ---------- */
@@ -139,35 +155,30 @@ header {
   justify-content: center;
   gap: 8px;
   text-align: center;
-  border: 3px dashed var(--blue);
-  background: rgba(240, 245, 255, 0.85);
+  border: 2px dashed var(--blue);
+  background: rgba(11, 14, 19, 0.82);
   cursor: pointer;
   z-index: 5;
   transition: background 0.2s, border-color 0.2s;
 }
 .drop-hint:hover {
-  background: rgba(227, 237, 255, 0.9);
+  background: rgba(22, 27, 36, 0.88);
 }
 .drop-hint.dragging {
   border-color: var(--green);
-  background: rgba(220, 252, 231, 0.92);
+  background: rgba(22, 60, 40, 0.85);
 }
 .drop-big {
   font-size: 30px;
   font-weight: 800;
+  color: var(--text);
 }
 .drop-small {
   color: var(--muted);
   font-size: 18px;
 }
-.drop-note {
-  color: var(--muted);
-  font-size: 14px;
-  margin-top: 14px;
-  max-width: 520px;
-}
 
-/* ---------- nástrojová lišta (3D workspace) ---------- */
+/* ---------- nástrojová lišta ---------- */
 .toolbar {
   position: absolute;
   left: 14px;
@@ -176,89 +187,7 @@ header {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-/* ---------- info panel ---------- */
-.info-panel {
-  position: absolute;
-  right: 14px;
-  top: 14px;
-  z-index: 6;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px 18px;
-  font-size: 15px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
-  min-width: 220px;
-}
-.info-title {
-  font-weight: 800;
-  font-size: 16px;
-  margin-bottom: 8px;
-}
-.info-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 5px 0;
-  border-bottom: 1px solid var(--border);
-}
-.info-row:last-child {
-  border-bottom: none;
-}
-.info-row span {
-  color: var(--muted);
-}
-.info-row b {
-  text-align: right;
-}
-
-/* ---------- panel vrstev (slicování) ---------- */
-.slice-panel {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  z-index: 6;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px 14px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-  width: 280px;
-}
-.slice-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.slice-close {
-  background: none;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 15px;
-  font-weight: 700;
-}
-.layer-canvas {
-  width: 100%;
-  height: auto;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: #0b1020;
-  image-rendering: pixelated;
-}
-.slice-panel input[type="range"] {
-  width: 100%;
-  margin-top: 8px;
-  accent-color: var(--blue);
-}
-.slice-label {
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 14px;
-  text-align: center;
+  max-width: calc(100% - 28px);
 }
 
 /* ---------- seznam modelů ---------- */
@@ -276,7 +205,7 @@ header {
   background: var(--card);
   border: 2px solid var(--border);
   border-radius: 999px;
-  padding: 8px 16px;
+  padding: 7px 16px;
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
@@ -288,7 +217,53 @@ header {
 }
 .model-chip.active {
   border-color: var(--blue);
-  background: #eff6ff;
+  background: #16223a;
+}
+
+/* ---------- panely ---------- */
+.info-panel {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  z-index: 6;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 18px;
+  font-size: 15px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  min-width: 220px;
+  max-width: 300px;
+}
+.info-title {
+  font-weight: 800;
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+.info-row:last-of-type {
+  border-bottom: none;
+}
+.info-row span {
+  color: var(--muted);
+}
+.info-row b {
+  text-align: right;
+  color: var(--text);
+}
+.info-note {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.fit-bad {
+  color: var(--danger);
 }
 
 /* ---------- nastavení ---------- */
@@ -314,6 +289,8 @@ header {
   font-size: 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  background: var(--card2);
+  color: var(--text);
 }
 .set-row input[type="number"] {
   width: 90px;
@@ -321,6 +298,8 @@ header {
   font-size: 15px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  background: var(--card2);
+  color: var(--text);
 }
 .set-row.check {
   justify-content: flex-start;
@@ -332,16 +311,55 @@ header {
   height: 20px;
   accent-color: var(--blue);
 }
-.info-note {
-  margin-top: 10px;
-  color: var(--muted);
-  font-size: 13px;
+
+/* ---------- panel vrstev ---------- */
+.slice-panel {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 6;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  width: 280px;
 }
-.fit-bad {
-  color: var(--danger);
+.slice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.slice-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+}
+.layer-canvas {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #05070a;
+  image-rendering: pixelated;
+}
+.slice-panel input[type="range"] {
+  width: 100%;
+  margin-top: 8px;
+  accent-color: var(--blue);
+}
+.slice-label {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
 }
 
-/* ---------- toast (zprávy) ---------- */
+/* ---------- toast ---------- */
 .toast {
   position: absolute;
   top: 14px;
@@ -352,27 +370,22 @@ header {
   border-radius: 12px;
   font-size: 16px;
   font-weight: 600;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
   max-width: 90%;
   text-align: center;
 }
 .toast-ok {
-  background: #f0fdf4;
-  border: 2px solid #bbf7d0;
-  color: var(--green);
+  background: #0c2416;
+  border: 2px solid #1f6e3a;
+  color: #4ade80;
 }
 .toast-err {
-  background: #fef2f2;
-  border: 2px solid #fecaca;
-  color: var(--danger);
-}
-.toast-warn {
-  background: #fffbeb;
-  border: 2px solid #fde68a;
-  color: #92400e;
+  background: #2a1414;
+  border: 2px solid #7f1d1d;
+  color: #f87171;
 }
 .toast-info {
-  background: #eff6ff;
-  border: 2px solid #bfdbfe;
-  color: #1e40af;
+  background: #101d33;
+  border: 2px solid #1e3a5f;
+  color: #93c5fd;
 }
