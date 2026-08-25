@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Viewport from "@/components/Viewport";
+import LayerPreview from "@/components/LayerPreview";
 import { parseStl, type StlMesh } from "@/lib/stl";
 import { makeTorus } from "@/lib/demo";
 import {
@@ -10,6 +11,7 @@ import {
   rotateMesh,
   type MeshStats,
 } from "@/lib/orient";
+import { sliceMesh, type SliceResult } from "@/lib/slice";
 
 export default function Home() {
   const [mesh, setMesh] = useState<StlMesh | null>(null);
@@ -21,6 +23,11 @@ export default function Home() {
   const [stats, setStats] = useState<MeshStats | null>(null);
   const [orientMsg, setOrientMsg] = useState("");
   const [showInfo, setShowInfo] = useState(false);
+
+  const [sliceResult, setSliceResult] = useState<SliceResult | null>(null);
+  const [sliceIdx, setSliceIdx] = useState(0);
+  const [slicing, setSlicing] = useState(false);
+
   const fileRef = useRef<HTMLInputElement>(null);
   const originalRef = useRef<StlMesh | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -44,15 +51,11 @@ export default function Home() {
     setOrientMsg("");
   };
 
-  const showToast = (type: "ok" | "err", text: string, ms = 6000) => {
-    if (type === "ok") setFileName(text);
-    else setError(text);
-    toastTimer.current = setTimeout(clearToast, ms);
-  };
-
   const applyMesh = useCallback((m: StlMesh, name: string) => {
     setMesh(m);
     setStats(meshStats(m));
+    setSliceResult(null);
+    setSliceIdx(0);
     setFileName(name);
     toastTimer.current = setTimeout(clearToast, 6000);
   }, []);
@@ -116,6 +119,7 @@ export default function Home() {
     const rotated = rotateMesh(mesh, best.rx, best.ry, best.rz);
     setMesh(rotated);
     setStats(meshStats(rotated));
+    setSliceResult(null);
     setOrientMsg(
       `Model natočen ✓ (X ${best.rx}°, Y ${best.ry}°) · podpora ${Math.round(
         best.proj
@@ -128,13 +132,44 @@ export default function Home() {
     if (originalRef.current) {
       setMesh(originalRef.current);
       setStats(meshStats(originalRef.current));
-      showToast("ok", "Vráceno do původní polohy ✓", 4000);
+      setSliceResult(null);
+      setFileName("Vráceno do původní polohy ✓");
+      toastTimer.current = setTimeout(clearToast, 4000);
     }
   }, []);
 
+  const doSlice = useCallback(() => {
+    if (!mesh) return;
+    setSlicing(true);
+    setError("");
+    // nech UI chvilku "načíst" a pak slice (sync pro MVP)
+    setTimeout(() => {
+      try {
+        const res = sliceMesh(mesh, {
+          layerHeight: 0.1,
+          resolutionX: 400,
+          resolutionY: 400,
+        });
+        setSliceResult(res);
+        setSliceIdx(0);
+        setOrientMsg(
+          `Naslicováno ✓ · ${res.layers.length} vrstev · 0,1 mm`
+        );
+      } catch (e) {
+        setError(
+          e instanceof Error ? e.message : "Slicování selhalo."
+        );
+      } finally {
+        setSlicing(false);
+        toastTimer.current = setTimeout(clearToast, 8000);
+      }
+    }, 30);
+  }, [mesh]);
+
   const pick = () => fileRef.current?.click();
 
-  const fmt = (n: number) => n.toLocaleString("cs-CZ", { maximumFractionDigits: 1 });
+  const fmt = (n: number) =>
+    n.toLocaleString("cs-CZ", { maximumFractionDigits: 1 });
 
   return (
     <div className="page">
@@ -178,11 +213,20 @@ export default function Home() {
             <button className="btn btn-small btn-primary" onClick={autoOrient}>
               Narovnej model
             </button>
+            <button
+              className="btn btn-small btn-green"
+              onClick={doSlice}
+              disabled={slicing}
+            >
+              {slicing ? "Slicuji…" : "Slicovat"}
+            </button>
             <button className="btn btn-small btn-ghost" onClick={revert}>
               Vrať zpět
             </button>
             <button
-              className={`btn btn-small ${showInfo ? "btn-primary" : "btn-ghost"}`}
+              className={`btn btn-small ${
+                showInfo ? "btn-primary" : "btn-ghost"
+              }`}
               onClick={() => setShowInfo((s) => !s)}
             >
               Info
@@ -195,7 +239,9 @@ export default function Home() {
             <div className="info-title">Model</div>
             <div className="info-row">
               <span>Objem</span>
-              <b>{fmt(stats.volume)} mm³ ({fmt(stats.volume / 1000)} ml)</b>
+              <b>
+                {fmt(stats.volume)} mm³ ({fmt(stats.volume / 1000)} ml)
+              </b>
             </div>
             <div className="info-row">
               <span>Rozměry</span>
@@ -212,6 +258,32 @@ export default function Home() {
               <b>
                 {fmt(stats.com[0])}, {fmt(stats.com[1])}, {fmt(stats.com[2])}
               </b>
+            </div>
+          </div>
+        )}
+
+        {sliceResult && (
+          <div className="slice-panel">
+            <div className="slice-head">
+              <b>Vrstvy</b>
+              <button
+                className="slice-close"
+                onClick={() => setSliceResult(null)}
+              >
+                × zavřít
+              </button>
+            </div>
+            <LayerPreview sliceResult={sliceResult} layerIdx={sliceIdx} />
+            <input
+              type="range"
+              min={0}
+              max={sliceResult.layers.length - 1}
+              value={sliceIdx}
+              onChange={(e) => setSliceIdx(Number(e.target.value))}
+            />
+            <div className="slice-label">
+              Vrstva {sliceIdx + 1} / {sliceResult.layers.length} · z ={" "}
+              {sliceResult.layers[sliceIdx].z.toFixed(2)} mm
             </div>
           </div>
         )}

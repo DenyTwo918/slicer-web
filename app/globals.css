@@ -110,6 +110,17 @@ header {
 .btn-ghost:hover {
   background: #e2e6ec;
 }
+.btn-green {
+  background: var(--green);
+  color: #fff;
+}
+.btn-green:hover {
+  background: #12853a;
+}
+.btn-green:disabled {
+  background: #86cba4;
+  cursor: not-allowed;
+}
 
 /* ---------- nápověda k přetažení ---------- */
 .drop-hint {
@@ -194,6 +205,53 @@ header {
 }
 .info-row b {
   text-align: right;
+}
+
+/* ---------- panel vrstev (slicování) ---------- */
+.slice-panel {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 6;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  width: 280px;
+}
+.slice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.slice-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+}
+.layer-canvas {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0b1020;
+  image-rendering: pixelated;
+}
+.slice-panel input[type="range"] {
+  width: 100%;
+  margin-top: 8px;
+  accent-color: var(--blue);
+}
+.slice-label {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
 }
 
 /* ---------- toast (zprávy) ---------- */
