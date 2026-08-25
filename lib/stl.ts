@@ -1,0 +1,93 @@
+export interface StlBounds {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
+export interface StlMesh {
+  /** 9 floatů na trojúhelník (3 vrcholy × 3 souřadnice) */
+  positions: Float32Array;
+  normals: Float32Array;
+  triangleCount: number;
+  bounds: StlBounds;
+}
+
+function cross(a: number[], b: number[]): number[] {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+/**
+ * Parser binárního STL (80 B hlavička, uint32 počet trojúhelníků,
+ * každý trojúhelník: normala 12 B + 3 vrcholy 36 B + atribut 2 B).
+ * Normály se přepočítají z vrcholů (křížový součin hran).
+ */
+export function parseBinaryStl(buffer: ArrayBuffer): StlMesh {
+  if (buffer.byteLength < 84) {
+    throw new Error("Soubor je příliš malý – není to STL.");
+  }
+  const view = new DataView(buffer);
+  const count = view.getUint32(80, true);
+  const expected = 84 + count * 50;
+  if (buffer.byteLength !== expected) {
+    throw new Error("STL soubor má neočekávanou velikost (poškozený soubor?).");
+  }
+
+  const positions = new Float32Array(count * 9);
+  const normals = new Float32Array(count * 9);
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+
+  for (let i = 0; i < count; i++) {
+    const off = 84 + i * 50;
+    const v0 = [
+      view.getFloat32(off + 12, true),
+      view.getFloat32(off + 16, true),
+      view.getFloat32(off + 20, true),
+    ];
+    const v1 = [
+      view.getFloat32(off + 24, true),
+      view.getFloat32(off + 28, true),
+      view.getFloat32(off + 32, true),
+    ];
+    const v2 = [
+      view.getFloat32(off + 36, true),
+      view.getFloat32(off + 40, true),
+      view.getFloat32(off + 44, true),
+    ];
+
+    const e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+    const e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+    const n = cross(e1, e2);
+    const len = Math.hypot(n[0], n[1], n[2]) || 1;
+
+    const p = i * 9;
+    positions[p] = v0[0]; positions[p + 1] = v0[1]; positions[p + 2] = v0[2];
+    positions[p + 3] = v1[0]; positions[p + 4] = v1[1]; positions[p + 5] = v1[2];
+    positions[p + 6] = v2[0]; positions[p + 7] = v2[1]; positions[p + 8] = v2[2];
+
+    for (let k = 0; k < 3; k++) {
+      normals[p + k] = n[k] / len;
+      normals[p + 3 + k] = n[k] / len;
+      normals[p + 6 + k] = n[k] / len;
+    }
+
+    for (const v of [v0, v1, v2]) {
+      for (let k = 0; k < 3; k++) {
+        if (v[k] < min[k]) min[k] = v[k];
+        if (v[k] > max[k]) max[k] = v[k];
+      }
+    }
+  }
+
+  return { positions, normals, triangleCount: count, bounds: { min, max } };
+}
+
+/**
+ * Načte STL. Zatím binární varianta (ASCII STL se doplní později).
+ */
+export function parseStl(buffer: ArrayBuffer): StlMesh {
+  return parseBinaryStl(buffer);
+}
