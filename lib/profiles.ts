@@ -49,15 +49,15 @@ export const PRINTERS: PrinterProfile[] = [
     id: "m7",
     name: "Photon Mono M7",
     brand: "Anycubic",
-    resX: 13312,
+    resX: 11520, // ověřeno z cloudu (firmware 4.0.6.7) — 12K, ne 14K!
     resY: 5120,
-    printX: 223.64,
+    printX: 223.642,
     printY: 126.48,
     printZ: 230,
-    pixelXUm: 16.8,
-    pixelYUm: 24.8,
+    pixelXUm: 19.4, // 223.642/11520
+    pixelYUm: 24.7, // 126.48/5120
     keySuffix: "pm7",
-    keyImageFormat: "pwszImg",
+    keyImageFormat: "pw0Img",
   },
   {
     id: "m7-pro",

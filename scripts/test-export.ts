@@ -12,13 +12,13 @@ import { translateMesh } from "../lib/transform";
 import { getPrinter } from "../lib/profiles";
 import { unzipSync } from "fflate";
 
-const MX = 13312;
+const MX = 11520;
 const MY = 5120;
 const SLICE_OPTS = {
   layerHeight: 0.1,
-  resolutionX: 1664,
-  resolutionY: 640,
-  plateW: 223.64,
+  resolutionX: 1440, // 11520 / 8 (M7)
+  resolutionY: 640, // 5120 / 8
+  plateW: 223.642,
   plateH: 126.48,
 };
 
