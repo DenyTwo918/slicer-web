@@ -1,15 +1,32 @@
 "use client";
 
-import { useCallback, useRef, useState, type DragEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent,
+} from "react";
 import Viewport from "@/components/Viewport";
 import { parseStl, type StlMesh } from "@/lib/stl";
+import { makeTorus } from "@/lib/demo";
 
 export default function Home() {
   const [mesh, setMesh] = useState<StlMesh | null>(null);
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [webglOk, setWebglOk] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    try {
+      const c = document.createElement("canvas");
+      setWebglOk(!!(c.getContext("webgl2") || c.getContext("webgl")));
+    } catch {
+      setWebglOk(false);
+    }
+  }, []);
 
   const loadFile = useCallback(async (file: File) => {
     setError("");
@@ -20,12 +37,20 @@ export default function Home() {
       setMesh(m);
       setFileName(file.name);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Nepodařilo se načíst soubor.");
+      setError(
+        e instanceof Error ? e.message : "Nepodařilo se načíst soubor."
+      );
       setMesh(null);
       setFileName("");
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  const loadDemo = useCallback(() => {
+    setError("");
+    setMesh(makeTorus());
+    setFileName("demo model (donut)");
   }, []);
 
   const onDrop = useCallback(
@@ -81,21 +106,35 @@ export default function Home() {
           />
 
           {!mesh && (
-            <div
-              className="dropzone"
-              onClick={pick}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={onDrop}
-            >
-              <div className="big">Sem přetáhni svůj model</div>
-              <div className="hint">
-                nebo klikni a vyber soubor (STL, OBJ, 3MF)
+            <>
+              <div
+                className="dropzone"
+                onClick={pick}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={onDrop}
+              >
+                <div className="big">Sem přetáhni svůj model</div>
+                <div className="hint">
+                  nebo klikni a vyber soubor (STL, OBJ, 3MF)
+                </div>
               </div>
-            </div>
+              <div className="demo-row">
+                <span>Nemáš model? Vyzkoušej demo:</span>
+                <button className="btn btn-ghost" onClick={loadDemo}>
+                  Vyzkoušej demo model — bez souboru
+                </button>
+              </div>
+            </>
           )}
 
           {loading && <div className="status show">Načítám model…</div>}
           {error && <div className="error show">{error}</div>}
+          {mesh && !webglOk && (
+            <div className="warn show">
+              Tento prohlížeč nepodporuje 3D (WebGL). Zkus prosím Chrome nebo
+              Edge — model ale můžeš i tak nahrát.
+            </div>
+          )}
 
           {mesh && (
             <>
@@ -133,7 +172,8 @@ export default function Home() {
             <summary>Potřebuješ pomoc?</summary>
             <div className="body">
               Soubor s modelem najdeš na ploše nebo ve složce Stažené soubory.
-              Většinou končí na .stl.
+              Většinou končí na .stl. Nemáš model? Stačí kliknout na tlačítko
+              „Vyzkoušej demo model".
             </div>
           </details>
         </div>
