@@ -3,6 +3,7 @@ import type { StlMesh } from "./stl";
 export interface OrientationResult {
   rx: number;
   ry: number;
+  rz: number;
   score: number;
   proj: number;
   comZ: number;
