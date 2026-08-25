@@ -451,5 +451,8 @@ export async function buildPm7(
     files[`layer_images/layer_${i}.pw0Img`] = rleLayers[i];
   });
 
-  return zipSync(files);
+  // hranice s fflate: TS 5.7 generické Uint8Array vs. typy knihovny
+  return zipSync(
+    files as unknown as Record<string, Uint8Array<ArrayBuffer>>
+  );
 }
