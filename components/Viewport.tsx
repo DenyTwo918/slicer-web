@@ -89,13 +89,14 @@ function Vat({ printer }: { printer: PrinterProfile }) {
   );
 }
 
-/** Kamera na celou vanu (při startu / změně tiskárny). */
+/** Kamera na celou vanu — pohled „nastojato" (deska vodorovně, model svisle). */
 function FrameVat({ printer }: { printer: PrinterProfile }) {
   const camera = useThree((s) => s.camera);
   useEffect(() => {
     const s = Math.max(printer.printX, printer.printY);
-    camera.position.set(s * 0.85, s * 0.7, s * 1.05);
-    camera.lookAt(0, printer.printZ * 0.3, 0);
+    // přední-pravý-horní pohled, deska vodorovně
+    camera.position.set(s * 1.05, s * 0.62, s * 1.25);
+    camera.lookAt(0, printer.printZ * 0.26, 0);
   }, [printer, camera]);
   return null;
 }

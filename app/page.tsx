@@ -9,6 +9,7 @@ import {
   findBestOrientation,
   meshStats,
   rotateMesh as orientRotate,
+  autoUpright,
   type MeshStats,
 } from "@/lib/orient";
 import {
@@ -292,6 +293,15 @@ export default function Home() {
     showToast("ok", `Model natočen ✓ (X ${best.rx}°, Y ${best.ry}°)`);
   }, [selectedId, models, updateModel]);
 
+  const standUpSel = useCallback(() => {
+    if (!selectedId) return;
+    const item = models.find((m) => m.id === selectedId);
+    if (!item) return;
+    const upright = normalizeToPlate(autoUpright(item.mesh));
+    updateModel(selectedId, (m) => ({ ...m, mesh: upright }));
+    showToast("ok", "Model postaven nastojato ✓");
+  }, [selectedId, models, updateModel]);
+
   const removeSel = useCallback(() => {
     if (selectedId === null) return;
     setModels((prev) => prev.filter((m) => m.id !== selectedId));
@@ -446,6 +456,9 @@ export default function Home() {
           <div className="toolbar">
             <button className="btn btn-small btn-primary" onClick={orientSel} disabled={!selected}>
               Narovnej
+            </button>
+            <button className="btn btn-small btn-primary" onClick={standUpSel} disabled={!selected}>
+              Postav
             </button>
             <button className="btn btn-small btn-ghost" onClick={() => rotateSel("x")} disabled={!selected}>
               Otoč X 90°

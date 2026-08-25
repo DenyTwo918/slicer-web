@@ -220,3 +220,20 @@ export function findBestOrientation(
   }
   return cands.reduce((a, b) => (b.score < a.score ? b : a));
 }
+
+/**
+ * Postaví model „nastojato": otočí ho tak, aby nejdelší osa bounding boxu
+ * směřovala svisle (Z). U plochých STL (ležící modely) to udělá z nich
+ * stojící. Vrací otočenou mesh (ještě bez posunu na desku).
+ */
+export function autoUpright(mesh: StlMesh): StlMesh {
+  const { min, max } = mesh.bounds;
+  const dx = max[0] - min[0];
+  const dy = max[1] - min[1];
+  const dz = max[2] - min[2];
+  if (dz >= dx && dz >= dy) return mesh; // už stojí
+  if (dx >= dy && dx >= dz) {
+    return rotateMesh(mesh, 0, 90, 0); // nejdelší X → Z
+  }
+  return rotateMesh(mesh, 90, 0, 0); // nejdelší Y → Z
+}
