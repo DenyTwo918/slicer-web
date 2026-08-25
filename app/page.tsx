@@ -26,6 +26,8 @@ import {
 import { sliceMesh, unionSlices, type SliceResult } from "@/lib/slice";
 import { generateSupports } from "@/lib/supports";
 import { applyAA } from "@/lib/aa";
+import { applyHollow } from "@/lib/hollow";
+import { applyRaft } from "@/lib/raft";
 import { buildPm7 } from "@/lib/pm7";
 import { sendPrintToPrinter, getStoredJwt, setStoredJwt } from "@/lib/anycubic";
 import {
@@ -57,7 +59,38 @@ interface SliceSettings {
   bottomLayers: number;
   supports: boolean;
   aa: boolean;
+  hollow: boolean;
+  wallMm: number;
+  holeDiaMm: number;
+  drainHoles: boolean;
+  raft: boolean;
+  raftLayers: number;
+  raftMarginMm: number;
+  zupHeight: number;
+  zupSpeed: number;
+  zupHeightBottom: number;
+  zupSpeedBottom: number;
 }
+
+const DEFAULT_SETTINGS: SliceSettings = {
+  layerHeight: 0.1,
+  bottomExposure: 25,
+  normalExposure: 2.5,
+  bottomLayers: 5,
+  supports: true,
+  aa: true,
+  hollow: false,
+  wallMm: 2.0,
+  holeDiaMm: 3.0,
+  drainHoles: true,
+  raft: false,
+  raftLayers: 3,
+  raftMarginMm: 3,
+  zupHeight: 1.0,
+  zupSpeed: 1.0,
+  zupHeightBottom: 1.5,
+  zupSpeedBottom: 0.5,
+};
 
 const SLOT_OFFSETS: [number, number][] = [
   [0, 0],
@@ -103,16 +136,10 @@ export default function Home() {
   );
   const [models, setModels] = useState<ModelItem[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [settings, setSettings] = useState<SliceSettings>(
-    savedProfile?.settings ?? {
-      layerHeight: 0.1,
-      bottomExposure: 25,
-      normalExposure: 2.5,
-      bottomLayers: 5,
-      supports: true,
-      aa: true,
-    }
-  );
+  const [settings, setSettings] = useState<SliceSettings>({
+    ...DEFAULT_SETTINGS,
+    ...(savedProfile?.settings ?? {}),
+  });
 
   const [sliceResult, setSliceResult] = useState<SliceResult | null>(null);
   const [sliceIdx, setSliceIdx] = useState(0);
@@ -312,18 +339,77 @@ export default function Home() {
     setSliceResult(null);
   }, [selectedId]);
 
+  const duplicateSel = useCallback(() => {
+    if (!selectedId) return;
+    const item = models.find((m) => m.id === selectedId);
+    if (!item) return;
+    const copy: ModelItem = {
+      ...item,
+      id: nextId++,
+      name: item.name + " (kopie)",
+      transform: { ...item.transform, x: item.transform.x + 30, y: item.transform.y + 30 },
+    };
+    setModels((prev) => [...prev, copy]);
+    setSelectedId(copy.id);
+    setSliceResult(null);
+    showToast("ok", "Model duplikován ✓");
+  }, [selectedId, models]);
+
+  const downloadSelStl = useCallback(() => {
+    if (!selected) return;
+    const m = applyTransform(selected.mesh, selected.transform);
+    const n = m.triangleCount;
+    const buf = new ArrayBuffer(84 + n * 50);
+    const v = new DataView(buf);
+    v.setUint32(80, n, true);
+    const cross = (a: number[], b: number[]) => [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0],
+    ];
+    for (let i = 0; i < n; i++) {
+      const o = i * 9;
+      const v0 = [m.positions[o], m.positions[o + 1], m.positions[o + 2]];
+      const v1 = [m.positions[o + 3], m.positions[o + 4], m.positions[o + 5]];
+      const v2 = [m.positions[o + 6], m.positions[o + 7], m.positions[o + 8]];
+      const e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+      const e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+      const nv = cross(e1, e2);
+      const len = Math.hypot(nv[0], nv[1], nv[2]) || 1;
+      const off = 84 + i * 50;
+      v.setFloat32(off, nv[0] / len, true);
+      v.setFloat32(off + 4, nv[1] / len, true);
+      v.setFloat32(off + 8, nv[2] / len, true);
+      for (let k = 0; k < 3; k++) {
+        const p = k === 0 ? v0 : k === 1 ? v1 : v2;
+        v.setFloat32(off + 12 + k * 12, p[0], true);
+        v.setFloat32(off + 16 + k * 12, p[1], true);
+        v.setFloat32(off + 20 + k * 12, p[2], true);
+      }
+      v.setUint16(off + 48, 0, true);
+    }
+    downloadBytes(new Uint8Array(buf), (selected.name.replace(/\.[^.]+$/, "") || "model") + ".stl");
+    showToast("ok", "STL stažen ✓");
+  }, [selected]);
+
   const doSlice = useCallback(() => {
     if (models.length === 0) return;
     setSlicing(true);
     setTimeout(() => {
       try {
         const scale = sliceScale(printer.resX, printer.resY);
+        const sliceW = printer.resX / scale;
+        const sliceH = printer.resY / scale;
+        const mmPerPx = {
+          x: printer.printX / sliceW,
+          y: printer.printY / sliceH,
+        };
         let result: SliceResult | null = null;
         for (const m of models) {
           const s = sliceMesh(m.mesh, {
             layerHeight: settings.layerHeight,
-            resolutionX: printer.resX / scale,
-            resolutionY: printer.resY / scale,
+            resolutionX: sliceW,
+            resolutionY: sliceH,
             plateW: printer.printX,
             plateH: printer.printY,
             offsetX: m.transform.x,
@@ -331,8 +417,22 @@ export default function Home() {
           });
           result = result ? unionSlices(result, s) : s;
         }
+        if (result && settings.hollow) {
+          result = applyHollow(
+            result,
+            { enabled: true, wallMm: settings.wallMm, holeDiaMm: settings.holeDiaMm, drainHoles: settings.drainHoles },
+            mmPerPx
+          );
+        }
         if (result && settings.supports) {
           result = generateSupports(result, { enabled: true });
+        }
+        if (result && settings.raft) {
+          result = applyRaft(
+            result,
+            { enabled: true, layers: settings.raftLayers, marginMm: settings.raftMarginMm },
+            mmPerPx
+          );
         }
         if (result && settings.aa) {
           result = applyAA(result);
@@ -363,6 +463,10 @@ export default function Home() {
           bottomExposure: settings.bottomExposure,
           normalExposure: settings.normalExposure,
           bottomLayers: settings.bottomLayers,
+          zupHeight: settings.zupHeight,
+          zupSpeed: settings.zupSpeed,
+          zupHeightBottom: settings.zupHeightBottom,
+          zupSpeedBottom: settings.zupSpeedBottom,
         }
       );
       downloadBytes(bytes, `tisk.${printer.keySuffix}`);
@@ -422,6 +526,14 @@ export default function Home() {
     [models, printer]
   );
   const allFit = viewModels.every((m) => m.fits);
+
+  const fmtTime = (sec: number) => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.round((sec % 3600) / 60);
+    return h > 0 ? `${h} h ${m} min` : `${m} min`;
+  };
+  const fmtCost = (ml: number) =>
+    `$${(((ml * (resin.price ?? 220)) / 1000)).toFixed(2)}`;
 
   return (
     <div className="page">
@@ -510,6 +622,12 @@ export default function Home() {
             </button>
             <button className="btn btn-small btn-ghost" onClick={resetSel} disabled={!selected}>
               Vrať
+            </button>
+            <button className="btn btn-small btn-ghost" onClick={duplicateSel} disabled={!selected}>
+              Duplikovat
+            </button>
+            <button className="btn btn-small btn-ghost" onClick={downloadSelStl} disabled={!selected}>
+              STL
             </button>
             <button className="btn btn-small btn-green" onClick={doSlice} disabled={slicing || models.length === 0}>
               {slicing ? "Slicuji…" : "Slicovat"}
@@ -635,7 +753,230 @@ export default function Home() {
                 checked={settings.aa}
                 onChange={(e) => setSettings((s) => ({ ...s, aa: e.target.checked }))}
               />
-              <span>Anti-aliasing</span>
+            </label>
+            <label className="set-row check">
+              <input
+                type="checkbox"
+                checked={settings.hollow}
+                onChange={(e) => setSettings((s) => ({ ...s, hollow: e.target.checked }))}
+              />
+              <span>Hollowing (dutý model)</span>
+            </label>
+            {settings.hollow && (
+              <>
+                <label className="set-row">
+                  <span>Stěna (mm)</span>
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={0.5}
+                    value={settings.wallMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, wallMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Otvory Ø (mm)</span>
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={1}
+                    value={settings.holeDiaMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, holeDiaMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row check">
+                  <input
+                    type="checkbox"
+                    checked={settings.drainHoles}
+                    onChange={(e) => setSettings((s) => ({ ...s, drainHoles: e.target.checked }))}
+                  />
+                  <span>Odvodňovací otvory</span>
+                </label>
+              </>
+            )}
+            <label className="set-row check">
+              <input
+                type="checkbox"
+                checked={settings.raft}
+                onChange={(e) => setSettings((s) => ({ ...s, raft: e.target.checked }))}
+              />
+              <span>Raft (základna)</span>
+            </label>
+            {settings.raft && (
+              <>
+                <label className="set-row">
+                  <span>Raft vrstvy</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={settings.raftLayers}
+                    onChange={(e) => setSettings((s) => ({ ...s, raftLayers: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Raft přesah (mm)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={settings.raftMarginMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, raftMarginMm: Number(e.target.value) }))}
+                  />
+                </label>
+              </>
+            )}
+            <label className="set-row">
+              <span>Zvednutí (mm)</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0.1}
+                value={settings.zupHeight}
+                onChange={(e) => setSettings((s) => ({ ...s, zupHeight: Number(e.target.value) }))}
+              />
+            </label>
+            <label className="set-row">
+              <span>Rychlost zvedání</span>
+              <input
+                type="number"
+                step={0.5}
+                min={0.5}
+                value={settings.zupSpeed}
+                onChange={(e) => setSettings((s) => ({ ...s, zupSpeed: Number(e.target.value) }))}
+              />
+            </label>
+            <label className="set-row">
+              <span>Zvednutí 1. vrstev</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0.1}
+                value={settings.zupHeightBottom}
+                onChange={(e) => setSettings((s) => ({ ...s, zupHeightBottom: Number(e.target.value) }))}
+              />
+            </label>
+            <label className="set-row">
+              <span>Rychlost 1. vrstev</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0.1}
+                value={settings.zupSpeedBottom}
+                onChange={(e) => setSettings((s) => ({ ...s, zupSpeedBottom: Number(e.target.value) }))}
+              />
+            </label>
+            <label className="set-row check">
+              <input
+                type="checkbox"
+                checked={settings.hollow}
+                onChange={(e) => setSettings((s) => ({ ...s, hollow: e.target.checked }))}
+              />
+              <span>Hollowing (dutý model)</span>
+            </label>
+            {settings.hollow && (
+              <>
+                <label className="set-row">
+                  <span>Stěna (mm)</span>
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={0.5}
+                    value={settings.wallMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, wallMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Otvory Ø (mm)</span>
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={1}
+                    value={settings.holeDiaMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, holeDiaMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row check">
+                  <input
+                    type="checkbox"
+                    checked={settings.drainHoles}
+                    onChange={(e) => setSettings((s) => ({ ...s, drainHoles: e.target.checked }))}
+                  />
+                  <span>Odvodňovací otvory</span>
+                </label>
+              </>
+            )}
+            <label className="set-row check">
+              <input
+                type="checkbox"
+                checked={settings.raft}
+                onChange={(e) => setSettings((s) => ({ ...s, raft: e.target.checked }))}
+              />
+              <span>Raft (základna)</span>
+            </label>
+            {settings.raft && (
+              <>
+                <label className="set-row">
+                  <span>Raft vrstvy</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={settings.raftLayers}
+                    onChange={(e) => setSettings((s) => ({ ...s, raftLayers: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Raft přesah (mm)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={settings.raftMarginMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, raftMarginMm: Number(e.target.value) }))}
+                  />
+                </label>
+              </>
+            )}
+            <label className="set-row">
+              <span>Zvednutí (mm)</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0.1}
+                value={settings.zupHeight}
+                onChange={(e) => setSettings((s) => ({ ...s, zupHeight: Number(e.target.value) }))}
+              />
+            </label>
+            <label className="set-row">
+              <span>Rychlost zvedání</span>
+              <input
+                type="number"
+                step={0.5}
+                min={0.5}
+                value={settings.zupSpeed}
+                onChange={(e) => setSettings((s) => ({ ...s, zupSpeed: Number(e.target.value) }))}
+              />
+            </label>
+            <label className="set-row">
+              <span>Zvednutí 1. vrstev</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0.1}
+                value={settings.zupHeightBottom}
+                onChange={(e) => setSettings((s) => ({ ...s, zupHeightBottom: Number(e.target.value) }))}
+              />
+            </label>
+            <label className="set-row">
+              <span>Rychlost 1. vrstev</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0.1}
+                value={settings.zupSpeedBottom}
+                onChange={(e) => setSettings((s) => ({ ...s, zupSpeedBottom: Number(e.target.value) }))}
+              />
             </label>
           </div>
         )}
@@ -670,6 +1011,24 @@ export default function Home() {
               <b className={allFit ? "" : "fit-bad"}>
                 {allFit ? "✓ ano" : "✗ něco přesahuje (červeně)"}
               </b>
+            </div>
+            {sliceResult && (
+              <>
+                <div className="info-row">
+                  <span>Vrstvy</span>
+                  <b>
+                    {sliceResult.layers.length} · {sliceResult.layerHeight} mm
+                  </b>
+                </div>
+                <div className="info-row">
+                  <span>Čas (odhad)</span>
+                  <b>{fmtTime(sliceResult.layers.length * 10)}</b>
+                </div>
+              </>
+            )}
+            <div className="info-row">
+              <span>Cena (odhad)</span>
+              <b>{fmtCost(volMl)}</b>
             </div>
             <div className="info-row">
               <span>Objem celkem</span>

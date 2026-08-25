@@ -276,7 +276,11 @@ function buildPwsp(machine: PrinterProfile) {
   };
 }
 
-function buildLayersController(slice: SliceResult, layerTimes: number[]) {
+function buildLayersController(
+  slice: SliceResult,
+  layerTimes: number[],
+  zup: { zupHeightBottom: number; zupSpeedBottom: number; zupHeight: number; zupSpeed: number }
+) {
   return {
     count: slice.layers.length,
     paras: slice.layers.map((l, i) => ({
@@ -284,8 +288,8 @@ function buildLayersController(slice: SliceResult, layerTimes: number[]) {
       exposure_time: layerTimes[i],
       layer_minheight: Number((i * slice.layerHeight).toFixed(4)),
       layer_thickness: Number(slice.layerHeight.toFixed(4)),
-      zup_height: i < 5 ? 1.5 : 1.0,
-      zup_speed: i < 5 ? 0.5 : 1.0,
+      zup_height: i < 5 ? zup.zupHeightBottom : zup.zupHeight,
+      zup_speed: i < 5 ? zup.zupSpeedBottom : zup.zupSpeed,
     })),
   };
 }
@@ -350,6 +354,13 @@ export interface Pm7Options {
   bottomLayers?: number;
   /** tiskárna — default Anycubic M7 */
   printer?: PrinterProfile;
+  /** zvedání (lift) — první vrstvy */
+  zupHeightBottom?: number;
+  zupSpeedBottom?: number;
+  /** zvedání — běžné vrstvy */
+  zupHeight?: number;
+  zupSpeed?: number;
+  zdownSpeed?: number;
 }
 
 /**
@@ -396,6 +407,13 @@ export async function buildPm7(
     i < bottomLayers ? bottomExposure : normalExposure
   );
 
+  const zup = {
+    zupHeightBottom: opts.zupHeightBottom ?? 1.5,
+    zupSpeedBottom: opts.zupSpeedBottom ?? 0.5,
+    zupHeight: opts.zupHeight ?? 1.0,
+    zupSpeed: opts.zupSpeed ?? 1.0,
+  };
+
   const rleLayers: Uint8Array[] = [];
   for (const l of slice.layers) {
     rleLayers.push(encodeLayerToMachine(l, slice, machine));
@@ -413,7 +431,7 @@ export async function buildPm7(
   const files: Record<string, Uint8Array> = {
     "anycubic_photon_resins.pwsp": strToU8(JSON.stringify(buildPwsp(machine), null, 4)),
     "layers_controller.conf": strToU8(
-      JSON.stringify(buildLayersController(slice, layerTimes), null, 4)
+      JSON.stringify(buildLayersController(slice, layerTimes, zup), null, 4)
     ),
     "print_info.json": strToU8(JSON.stringify(buildPrintInfo(volumeMl, printTimeS))),
     "software_info.conf": strToU8(

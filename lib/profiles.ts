@@ -1,6 +1,6 @@
-/**
- * Knihovna profilů: tiskárny, pryskyřice, fólie.
- * Výběr se ukládá do localStorage ("slicer.profile.v1") — poslední volba se pamatuje.
+﻿/**
+ * Knihovna profilĹŻ: tiskĂˇrny, pryskyĹ™ice, fĂłlie.
+ * VĂ˝bÄ›r se uklĂˇdĂˇ do localStorage ("slicer.profile.v1") â€” poslednĂ­ volba se pamatuje.
  */
 
 export interface PrinterProfile {
@@ -9,17 +9,17 @@ export interface PrinterProfile {
   brand: string;
   resX: number;
   resY: number;
-  /** rozměry tiskové desky v mm */
+  /** rozmÄ›ry tiskovĂ© desky v mm */
   printX: number;
   printY: number;
   printZ: number;
-  /** velikost pixelu v µm */
+  /** velikost pixelu v Âµm */
   pixelXUm: number;
   pixelYUm: number;
-  /** přípona souboru (pm7, pwsz, pm7m, ...) */
+  /** pĹ™Ă­pona souboru (pm7, pwsz, pm7m, ...) */
   keySuffix: string;
   keyImageFormat: string;
-  /** poznámka (nepovinná) */
+  /** poznĂˇmka (nepovinnĂˇ) */
   note?: string;
 }
 
@@ -30,16 +30,18 @@ export interface ResinProfile {
   type: string;
   /** hustota g/ml */
   density: number;
+  /** cena za litr ($/1000 ml) â€” pro odhad ceny tisku */
+  price: number;
   bottomLayers: number;
   bottomExposure: number; // s
-  normalExposure: number; // s @ 50 µm
+  normalExposure: number; // s @ 50 Âµm
   note?: string;
 }
 
 export interface FilmProfile {
   id: string;
   name: string;
-  /** násobitel expozice oproti FEP (ACF snáz pouští → méně expozice) */
+  /** nĂˇsobitel expozice oproti FEP (ACF snĂˇz pouĹˇtĂ­ â†’ mĂ©nÄ› expozice) */
   exposureFactor: number;
   note?: string;
 }
@@ -49,7 +51,7 @@ export const PRINTERS: PrinterProfile[] = [
     id: "m7",
     name: "Photon Mono M7",
     brand: "Anycubic",
-    resX: 11520, // ověřeno z cloudu (firmware 4.0.6.7) — 12K, ne 14K!
+    resX: 11520, // ovÄ›Ĺ™eno z cloudu (firmware 4.0.6.7) â€” 12K, ne 14K!
     resY: 5120,
     printX: 223.642,
     printY: 126.48,
@@ -86,7 +88,7 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 24.8,
     keySuffix: "pm7m",
     keyImageFormat: "pw0Img",
-    note: "hodnoty předběžné — ověřit v Photon Workshopu",
+    note: "hodnoty pĹ™edbÄ›ĹľnĂ© â€” ovÄ›Ĺ™it v Photon Workshopu",
   },
   {
     id: "m5s",
@@ -101,7 +103,7 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 23.8,
     keySuffix: "pm5s",
     keyImageFormat: "pwszImg",
-    note: "hodnoty předběžné",
+    note: "hodnoty pĹ™edbÄ›ĹľnĂ©",
   },
   {
     id: "mono2",
@@ -116,7 +118,7 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 34.8,
     keySuffix: "photon",
     keyImageFormat: "pw0Img",
-    note: "hodnoty předběžné",
+    note: "hodnoty pĹ™edbÄ›ĹľnĂ©",
   },
   {
     id: "saturn4",
@@ -131,7 +133,7 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 24.0,
     keySuffix: "ctb",
     keyImageFormat: "pwszImg",
-    note: "Elegoo používá Chitu (.ctb) — export .pm7 neplatí, jen profil desky",
+    note: "Elegoo pouĹľĂ­vĂˇ Chitu (.ctb) â€” export .pm7 neplatĂ­, jen profil desky",
   },
   {
     id: "sonic-mega8k",
@@ -146,29 +148,29 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 57.0,
     keySuffix: "ctb",
     keyImageFormat: "pwszImg",
-    note: "Chitu (.ctb) — profil desky pro testy",
+    note: "Chitu (.ctb) â€” profil desky pro testy",
   },
 ];
 
 export const RESINS: ResinProfile[] = [
-  { id: "anycubic-standard", name: "Standard", brand: "Anycubic", type: "standard", density: 1.1, bottomLayers: 6, bottomExposure: 35, normalExposure: 2.5 },
-  { id: "anycubic-abslike", name: "ABS-like Pro 2", brand: "Anycubic", type: "abs-like", density: 1.1, bottomLayers: 6, bottomExposure: 32, normalExposure: 2.2 },
-  { id: "anycubic-water", name: "Water-washable", brand: "Anycubic", type: "water-washable", density: 1.1, bottomLayers: 6, bottomExposure: 40, normalExposure: 2.8 },
-  { id: "anycubic-clear", name: "Clear", brand: "Anycubic", type: "transparent", density: 1.1, bottomLayers: 6, bottomExposure: 35, normalExposure: 2.5 },
-  { id: "anycubic-tough", name: "Tough", brand: "Anycubic", type: "tough", density: 1.15, bottomLayers: 6, bottomExposure: 38, normalExposure: 2.8 },
-  { id: "anycubic-flex", name: "Flexible", brand: "Anycubic", type: "flexible", density: 1.15, bottomLayers: 8, bottomExposure: 45, normalExposure: 3.5 },
-  { id: "elegoo-standard", name: "Standard", brand: "Elegoo", type: "standard", density: 1.1, bottomLayers: 6, bottomExposure: 35, normalExposure: 2.5 },
-  { id: "elegoo-abslike", name: "ABS-like", brand: "Elegoo", type: "abs-like", density: 1.1, bottomLayers: 6, bottomExposure: 30, normalExposure: 2.3 },
-  { id: "siraya-simple", name: "Simple", brand: "Siraya Tech", type: "standard", density: 1.1, bottomLayers: 6, bottomExposure: 30, normalExposure: 2.5 },
-  { id: "siraya-fast", name: "Fast", brand: "Siraya Tech", type: "fast", density: 1.1, bottomLayers: 6, bottomExposure: 25, normalExposure: 2.0 },
-  { id: "phrozen-aqua", name: "Aqua", brand: "Phrozen", type: "standard", density: 1.1, bottomLayers: 6, bottomExposure: 35, normalExposure: 3.0 },
-  { id: "sunlu-standard", name: "Standard", brand: "Sunlu", type: "standard", density: 1.1, bottomLayers: 6, bottomExposure: 35, normalExposure: 2.5 },
+  { id: "anycubic-standard", name: "Standard", brand: "Anycubic", type: "standard", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 35, normalExposure: 2.5 },
+  { id: "anycubic-abslike", name: "ABS-like Pro 2", brand: "Anycubic", type: "abs-like", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 32, normalExposure: 2.2 },
+  { id: "anycubic-water", name: "Water-washable", brand: "Anycubic", type: "water-washable", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 40, normalExposure: 2.8 },
+  { id: "anycubic-clear", name: "Clear", brand: "Anycubic", type: "transparent", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 35, normalExposure: 2.5 },
+  { id: "anycubic-tough", name: "Tough", brand: "Anycubic", type: "tough", density: 1.15, price: 220, bottomLayers: 6, bottomExposure: 38, normalExposure: 2.8 },
+  { id: "anycubic-flex", name: "Flexible", brand: "Anycubic", type: "flexible", density: 1.15, price: 220, bottomLayers: 8, bottomExposure: 45, normalExposure: 3.5 },
+  { id: "elegoo-standard", name: "Standard", brand: "Elegoo", type: "standard", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 35, normalExposure: 2.5 },
+  { id: "elegoo-abslike", name: "ABS-like", brand: "Elegoo", type: "abs-like", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 30, normalExposure: 2.3 },
+  { id: "siraya-simple", name: "Simple", brand: "Siraya Tech", type: "standard", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 30, normalExposure: 2.5 },
+  { id: "siraya-fast", name: "Fast", brand: "Siraya Tech", type: "fast", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 25, normalExposure: 2.0 },
+  { id: "phrozen-aqua", name: "Aqua", brand: "Phrozen", type: "standard", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 35, normalExposure: 3.0 },
+  { id: "sunlu-standard", name: "Standard", brand: "Sunlu", type: "standard", density: 1.1, price: 220, bottomLayers: 6, bottomExposure: 35, normalExposure: 2.5 },
 ];
 
 export const FILMS: FilmProfile[] = [
   { id: "fep", name: "FEP", exposureFactor: 1.0 },
-  { id: "nfep", name: "nFEP", exposureFactor: 0.95, note: "méně expozice než FEP" },
-  { id: "acf", name: "ACF", exposureFactor: 0.85, note: "nejlépe pouští tisk — nejméně expozice" },
+  { id: "nfep", name: "nFEP", exposureFactor: 0.95, note: "mĂ©nÄ› expozice neĹľ FEP" },
+  { id: "acf", name: "ACF", exposureFactor: 0.85, note: "nejlĂ©pe pouĹˇtĂ­ tisk â€” nejmĂ©nÄ› expozice" },
 ];
 
 export const DEFAULT_PRINTER_ID = "m7";
@@ -201,7 +203,7 @@ export interface SavedProfile {
 
 const STORAGE_KEY = "slicer.profile.v1";
 
-/** Načte poslední použitý profil (tiskárna/pryskyřice/fólie/nastavení). */
+/** NaÄŤte poslednĂ­ pouĹľitĂ˝ profil (tiskĂˇrna/pryskyĹ™ice/fĂłlie/nastavenĂ­). */
 export function loadSavedProfile(): SavedProfile | null {
   try {
     if (typeof window === "undefined" || typeof localStorage === "undefined") return null;
@@ -217,6 +219,7 @@ export function saveProfile(p: SavedProfile): void {
     if (typeof window === "undefined" || typeof localStorage === "undefined") return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
   } catch {
-    /* tichý fallback */
+    /* tichĂ˝ fallback */
   }
 }
+
