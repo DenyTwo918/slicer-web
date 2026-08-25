@@ -4,6 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Viewport from "@/components/Viewport";
 import { parseStl, type StlMesh } from "@/lib/stl";
 import { makeTorus } from "@/lib/demo";
+import {
+  findBestOrientation,
+  meshStats,
+  rotateMesh,
+  type MeshStats,
+} from "@/lib/orient";
 
 export default function Home() {
   const [mesh, setMesh] = useState<StlMesh | null>(null);
@@ -12,7 +18,11 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [webglOk, setWebglOk] = useState(true);
+  const [stats, setStats] = useState<MeshStats | null>(null);
+  const [orientMsg, setOrientMsg] = useState("");
+  const [showInfo, setShowInfo] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const originalRef = useRef<StlMesh | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -31,35 +41,53 @@ export default function Home() {
     }
     setFileName("");
     setError("");
+    setOrientMsg("");
   };
 
-  const loadFile = useCallback(async (file: File) => {
-    setError("");
-    setLoading(true);
-    try {
-      const buf = await file.arrayBuffer();
-      const m = parseStl(buf);
-      setMesh(m);
-      setFileName(file.name);
-      toastTimer.current = setTimeout(clearToast, 6000);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "NepodaĹ™ilo se naÄŤĂ­st soubor.");
-      setMesh(null);
-      setFileName("");
-      toastTimer.current = setTimeout(clearToast, 8000);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const showToast = (type: "ok" | "err", text: string, ms = 6000) => {
+    if (type === "ok") setFileName(text);
+    else setError(text);
+    toastTimer.current = setTimeout(clearToast, ms);
+  };
 
-  const loadDemo = useCallback(() => {
-    setError("");
-    setMesh(makeTorus());
-    setFileName("demo model (donut)");
+  const applyMesh = useCallback((m: StlMesh, name: string) => {
+    setMesh(m);
+    setStats(meshStats(m));
+    setFileName(name);
     toastTimer.current = setTimeout(clearToast, 6000);
   }, []);
 
-  // drag & drop kamkoli na strĂˇnku
+  const loadFile = useCallback(
+    async (file: File) => {
+      setError("");
+      setLoading(true);
+      try {
+        const buf = await file.arrayBuffer();
+        const m = parseStl(buf);
+        originalRef.current = m;
+        applyMesh(m, file.name);
+      } catch (e) {
+        setError(
+          e instanceof Error ? e.message : "Nepodařilo se načíst soubor."
+        );
+        setMesh(null);
+        setFileName("");
+        setStats(null);
+        toastTimer.current = setTimeout(clearToast, 8000);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applyMesh]
+  );
+
+  const loadDemo = useCallback(() => {
+    const m = makeTorus();
+    originalRef.current = m;
+    applyMesh(m, "demo model (donut)");
+  }, [applyMesh]);
+
+  // drag & drop kamkoli na stránku
   useEffect(() => {
     const onDragOver = (e: DragEvent) => {
       e.preventDefault();
@@ -82,7 +110,31 @@ export default function Home() {
     };
   }, [loadFile]);
 
+  const autoOrient = useCallback(() => {
+    if (!mesh) return;
+    const best = findBestOrientation(mesh, 15);
+    const rotated = rotateMesh(mesh, best.rx, best.ry, best.rz);
+    setMesh(rotated);
+    setStats(meshStats(rotated));
+    setOrientMsg(
+      `Model natočen ✓ (X ${best.rx}°, Y ${best.ry}°) · podpora ${Math.round(
+        best.proj
+      )} mm²`
+    );
+    toastTimer.current = setTimeout(clearToast, 6000);
+  }, [mesh]);
+
+  const revert = useCallback(() => {
+    if (originalRef.current) {
+      setMesh(originalRef.current);
+      setStats(meshStats(originalRef.current));
+      showToast("ok", "Vráceno do původní polohy ✓", 4000);
+    }
+  }, []);
+
   const pick = () => fileRef.current?.click();
+
+  const fmt = (n: number) => n.toLocaleString("cs-CZ", { maximumFractionDigits: 1 });
 
   return (
     <div className="page">
@@ -92,7 +144,7 @@ export default function Home() {
         </div>
         <div className="actions">
           <button className="btn btn-small btn-primary" onClick={pick}>
-            Vyber modelâ€¦
+            Vyber model…
           </button>
           <button className="btn btn-small btn-ghost" onClick={loadDemo}>
             Demo
@@ -110,28 +162,70 @@ export default function Home() {
             className={`drop-hint ${dragOver ? "dragging" : ""}`}
             onClick={pick}
           >
-            <div className="drop-big">PĹ™etĂˇhni svĹŻj STL sem</div>
+            <div className="drop-big">Přetáhni svůj STL sem</div>
             <div className="drop-small">
-              â€¦nebo klikni na â€žVyber model" Â· nemĂˇĹˇ model? Klikni na â€žDemo"
+              …nebo klikni na „Vyber model" · nemáš model? Klikni na „Demo"
             </div>
             <div className="drop-note">
-              STEP soubory zatĂ­m neumĂ­me â€” pĹ™eveÄŹ si model do STL (napĹ™. ve
-              FreeCAD / Fusion 360) a pĹ™etĂˇhni ho sem
+              STEP soubory zatím neumíme — převeď si model do STL (např. ve
+              FreeCAD / Fusion 360) a přetáhni ho sem
             </div>
           </div>
         )}
 
-        {loading && <div className="toast toast-info">NaÄŤĂ­tĂˇm modelâ€¦</div>}
+        {mesh && (
+          <div className="toolbar">
+            <button className="btn btn-small btn-primary" onClick={autoOrient}>
+              Narovnej model
+            </button>
+            <button className="btn btn-small btn-ghost" onClick={revert}>
+              Vrať zpět
+            </button>
+            <button
+              className={`btn btn-small ${showInfo ? "btn-primary" : "btn-ghost"}`}
+              onClick={() => setShowInfo((s) => !s)}
+            >
+              Info
+            </button>
+          </div>
+        )}
+
+        {mesh && showInfo && stats && (
+          <div className="info-panel">
+            <div className="info-title">Model</div>
+            <div className="info-row">
+              <span>Objem</span>
+              <b>{fmt(stats.volume)} mm³ ({fmt(stats.volume / 1000)} ml)</b>
+            </div>
+            <div className="info-row">
+              <span>Rozměry</span>
+              <b>
+                {fmt(stats.width)} × {fmt(stats.depth)} × {fmt(stats.height)} mm
+              </b>
+            </div>
+            <div className="info-row">
+              <span>Trojúhelníky</span>
+              <b>{mesh.triangleCount.toLocaleString("cs-CZ")}</b>
+            </div>
+            <div className="info-row">
+              <span>Těžiště</span>
+              <b>
+                {fmt(stats.com[0])}, {fmt(stats.com[1])}, {fmt(stats.com[2])}
+              </b>
+            </div>
+          </div>
+        )}
+
+        {loading && <div className="toast toast-info">Načítám model…</div>}
         {fileName && !error && (
           <div className="toast toast-ok">
-            Model naÄŤten âś“ Â· {fileName} Â·{" "}
-            {mesh?.triangleCount.toLocaleString("cs-CZ")} trojĂşhelnĂ­kĹŻ
+            {orientMsg || `Model načten ✓ · ${fileName}`}
           </div>
         )}
         {error && <div className="toast toast-err">{error}</div>}
         {mesh && !webglOk && (
           <div className="toast toast-warn">
-            Tento prohlĂ­ĹľeÄŤ nepodporuje 3D (WebGL) â€” zkus Chrome nebo Edge.
+            Tento prohlížeč nepodporuje 3D (WebGL) — zkus Chrome nebo Edge.
           </div>
         )}
       </div>

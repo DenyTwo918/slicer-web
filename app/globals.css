@@ -149,6 +149,53 @@ header {
   max-width: 520px;
 }
 
+/* ---------- nástrojová lišta (3D workspace) ---------- */
+.toolbar {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 6;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---------- info panel ---------- */
+.info-panel {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  z-index: 6;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 18px;
+  font-size: 15px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  min-width: 220px;
+}
+.info-title {
+  font-weight: 800;
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+.info-row:last-child {
+  border-bottom: none;
+}
+.info-row span {
+  color: var(--muted);
+}
+.info-row b {
+  text-align: right;
+}
+
 /* ---------- toast (zprávy) ---------- */
 .toast {
   position: absolute;
