@@ -178,7 +178,8 @@ export default function Home() {
   const [exportName, setExportName] = useState("tisk");
   const [showInfo, setShowInfo] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [openSec, setOpenSec] = useState<string>("move");
+  const [openSec, setOpenSec] = useState<string>("model");
+  const [gizmoMode, setGizmoMode] = useState<"translate" | "rotate" | "scale">("translate");
 
   const [toast, setToast] = useState<{ type: string; text: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -653,6 +654,21 @@ export default function Home() {
     [selectedId, updateModel]
   );
 
+  /** Gyro (rotate/scale) — zapíše rotaci/měřítko do dat modelu po tažení. */
+  const bakeTransform = useCallback(
+    (id: number, rotation: { rx: number; ry: number; rz: number }, scale: number) => {
+      updateModel(id, (m) => {
+        let mesh = m.mesh;
+        if (Math.abs(scale - 1) > 0.001) mesh = scaleMesh(mesh, scale);
+        if (rotation.rx || rotation.ry || rotation.rz) {
+          mesh = normalizeToPlate(rotateMesh(mesh, rotation.rx, rotation.ry, rotation.rz));
+        }
+        return { ...m, mesh };
+      });
+    },
+    [updateModel]
+  );
+
   const arrangeAll = useCallback(() => {
     setModels((prev) =>
       prev.map((m, i) => {
@@ -776,8 +792,10 @@ export default function Home() {
             models={viewModels}
             selectedId={selectedId}
             onMove={onMove}
+            onBake={bakeTransform}
             printer={printer}
             layerPreview={layerPreview}
+            gizmoMode={gizmoMode}
           />
         </div>
 
@@ -800,59 +818,31 @@ export default function Home() {
             </div>
           )}
 
-          <SideSec
-            label="Přesun (Move)"
-            open={openSec === "move"}
-            onToggle={() => setOpenSec(openSec === "move" ? "" : "move")}
-          >
-            <div className="mp-row">
-              <button className="mp-btn" onClick={() => nudgeSel(-5, 0)}>← 5</button>
-              <button className="mp-btn" onClick={() => nudgeSel(5, 0)}>5 →</button>
-              <button className="mp-btn" onClick={() => nudgeSel(0, 5)}>↑ 5</button>
-              <button className="mp-btn" onClick={() => nudgeSel(0, -5)}>5 ↓</button>
-              <button className="mp-btn" onClick={centerSel}>Centrovat</button>
-            </div>
-            <p className="mp-hint">Táhni 3D šipkami · klávesnice šipky = ±5 mm</p>
-          </SideSec>
-
-          <SideSec
-            label="Otočení (Rotate)"
-            open={openSec === "rotate"}
-            onToggle={() => setOpenSec(openSec === "rotate" ? "" : "rotate")}
-          >
-            <div className="mp-row">
-              <button className="mp-btn" onClick={() => rotateSel("x")}>Otoč X</button>
-              <button className="mp-btn" onClick={() => rotateSel("y")}>Otoč Y</button>
-              <button className="mp-btn" onClick={() => rotateSel("z")}>Otoč Z</button>
-              <button className="mp-btn" onClick={orientSel}>Narovnej</button>
-              <button className="mp-btn" onClick={standUpSel}>Postav</button>
-              <button className="mp-btn" onClick={resetSel}>Vrať</button>
-            </div>
-          </SideSec>
-
-          <SideSec
-            label="Měřítko (Scale)"
-            open={openSec === "scale"}
-            onToggle={() => setOpenSec(openSec === "scale" ? "" : "scale")}
-          >
-            <div className="mp-row">
-              <button className="mp-btn" onClick={() => scaleSel(0.9)}>−10 %</button>
-              <button className="mp-btn" onClick={() => scaleSel(1.1)}>+10 %</button>
-              <button className="mp-btn" onClick={downloadSelStl}>Uložit STL</button>
-            </div>
-          </SideSec>
-
-          <SideSec
-            label="Zrcadlení (Mirror)"
-            open={openSec === "mirror"}
-            onToggle={() => setOpenSec(openSec === "mirror" ? "" : "mirror")}
-          >
-            <div className="mp-row">
-              <button className="mp-btn" onClick={() => mirrorSel("x")}>Zrcad X</button>
-              <button className="mp-btn" onClick={() => mirrorSel("y")}>Zrcad Y</button>
-              <button className="mp-btn" onClick={() => mirrorSel("z")}>Zrcad Z</button>
-            </div>
-          </SideSec>
+          <div className="side-title">Nástroje</div>
+          <div className="tool-row">
+            <button
+              className={`tool-btn ${gizmoMode === "translate" ? "active" : ""}`}
+              onClick={() => setGizmoMode("translate")}
+              disabled={!selected}
+            >
+              Přesun
+            </button>
+            <button
+              className={`tool-btn ${gizmoMode === "rotate" ? "active" : ""}`}
+              onClick={() => setGizmoMode("rotate")}
+              disabled={!selected}
+            >
+              Otočení
+            </button>
+            <button
+              className={`tool-btn ${gizmoMode === "scale" ? "active" : ""}`}
+              onClick={() => setGizmoMode("scale")}
+              disabled={!selected}
+            >
+              Měřítko
+            </button>
+          </div>
+          <p className="mp-hint">Aktivní nástroj = gyro na modelu — táhni přímo ve 3D.</p>
 
           <SideSec
             label="Model (další)"
@@ -860,8 +850,18 @@ export default function Home() {
             onToggle={() => setOpenSec(openSec === "model" ? "" : "model")}
           >
             <div className="mp-row">
+              <button className="mp-btn" onClick={orientSel}>Narovnej</button>
+              <button className="mp-btn" onClick={standUpSel}>Postav</button>
+              <button className="mp-btn" onClick={resetSel}>Vrať</button>
               <button className="mp-btn" onClick={duplicateSel}>Duplikovat</button>
+              <button className="mp-btn" onClick={centerSel}>Centrovat</button>
               <button className="mp-btn mp-danger" onClick={removeSel}>Smaž</button>
+            </div>
+            <div className="mp-row">
+              <button className="mp-btn" onClick={() => mirrorSel("x")}>Zrcad X</button>
+              <button className="mp-btn" onClick={() => mirrorSel("y")}>Zrcad Y</button>
+              <button className="mp-btn" onClick={() => mirrorSel("z")}>Zrcad Z</button>
+              <button className="mp-btn" onClick={downloadSelStl}>STL</button>
               <button className="mp-btn" onClick={screenshot3d}>Foto</button>
               {models.length > 1 && (
                 <button className="mp-btn" onClick={arrangeAll}>Rozmístit</button>

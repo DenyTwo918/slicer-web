@@ -166,18 +166,45 @@ export default function Viewport({
   models,
   selectedId,
   onMove,
+  onBake,
   printer,
   layerPreview,
+  gizmoMode = "translate",
 }: {
   models: ViewModel[];
   selectedId: number | null;
   onMove: (id: number, x: number, y: number) => void;
+  onBake?: (id: number, rotation: { rx: number; ry: number; rz: number }, scale: number) => void;
   printer: PrinterProfile;
   layerPreview?: LayerPreviewData | null;
+  gizmoMode?: "translate" | "rotate" | "scale";
 }) {
   const selectedRef = useRef<THREE.Group>(null);
   const orbitRef = useRef<any>(null);
   const [orbitEnabled, setOrbitEnabled] = useState(true);
+  const rad2deg = (r: number) => (r * 180) / Math.PI;
+
+  const commitGizmo = () => {
+    const g = selectedRef.current;
+    if (!g) return;
+    if (gizmoMode === "translate") {
+      onMove(selectedId!, g.position.x, g.position.y);
+    } else {
+      onBake?.(
+        selectedId!,
+        {
+          rx: rad2deg(g.rotation.x),
+          ry: rad2deg(g.rotation.y),
+          rz: rad2deg(g.rotation.z),
+        },
+        g.scale.x
+      );
+      // po zapsání do dat modelu resetovat gyro
+      g.rotation.set(0, 0, 0);
+      g.scale.set(1, 1, 1);
+    }
+    setOrbitEnabled(true);
+  };
 
   return (
     <Canvas
@@ -233,16 +260,16 @@ export default function Viewport({
       {selectedId !== null && (
         <TransformControls
           object={selectedRef as any}
-          mode="translate"
+          mode={gizmoMode}
           size={0.9}
           onObjectChange={() => {
-            if (selectedRef.current) {
+            if (gizmoMode === "translate" && selectedRef.current) {
               const p = selectedRef.current.position;
               onMove(selectedId, p.x, p.y);
             }
           }}
           onMouseDown={() => setOrbitEnabled(false)}
-          onMouseUp={() => setOrbitEnabled(true)}
+          onMouseUp={commitGizmo}
         />
       )}
 
