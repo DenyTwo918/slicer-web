@@ -131,7 +131,6 @@ function LayerPlane({
         color="#4ade80"
         transparent
         opacity={0.95}
-        alphaTest={0.01}
         depthWrite={false}
         side={THREE.DoubleSide}
       />
@@ -292,9 +291,8 @@ function Model({
       <mesh geometry={geometry}>
         <meshStandardMaterial
           color="#9fb4d8"
-          wireframe
           transparent
-          opacity={0.35}
+          opacity={0.15}
           depthWrite={false}
           side={THREE.DoubleSide}
           clippingPlanes={[above!]}
@@ -304,26 +302,21 @@ function Model({
   );
 }
 
-/** Kovová tisková deska + jemná mřížka. */
+/** Kovová tisková deska — jemný nekonečný grid jako v 3D programech. */
 function BuildPlate({ printer }: { printer: PrinterProfile }) {
   return (
-    <group>
-      <mesh position={[0, 0, -0.5]} receiveShadow>
-        <boxGeometry args={[printer.printX, printer.printY, 1]} />
-        <meshStandardMaterial color="#202733" metalness={0.7} roughness={0.35} />
-      </mesh>
-      <Grid
-        position={[0, 0, 0.01]}
-        args={[printer.printX, printer.printY]}
-        cellSize={5}
-        cellThickness={0.4}
-        cellColor="#2b3442"
-        sectionSize={25}
-        sectionThickness={0.8}
-        sectionColor="#3b4657"
-        fadeDistance={printer.printX * 1.3}
-      />
-    </group>
+    <Grid
+      position={[0, 0, 0]}
+      infiniteGrid
+      cellSize={10}
+      cellThickness={0.5}
+      cellColor="#2b3442"
+      sectionSize={50}
+      sectionThickness={1}
+      sectionColor="#3b4657"
+      fadeDistance={700}
+      fadeStrength={1.5}
+    />
   );
 }
 
