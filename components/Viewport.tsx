@@ -103,6 +103,17 @@ function Model({
     return g;
   }, [mesh]);
 
+  // POZOR: všechny hooky musí běžet vždy (bez podmínek) — jinak React #310
+  const layerZ = clipPlane ? -clipPlane.constant : 0;
+  const below = useMemo(
+    () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerZ) : null),
+    [clipPlane, layerZ]
+  );
+  const above = useMemo(
+    () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, -1), layerZ) : null),
+    [clipPlane, layerZ]
+  );
+
   if (!clipPlane) {
     return (
       <mesh geometry={geometry} castShadow receiveShadow>
@@ -118,15 +129,6 @@ function Model({
   }
 
   // řez: spodní část plná, horní část = ghost (průsvitný)
-  const layerZ = -clipPlane.constant;
-  const below = useMemo(
-    () => new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerZ),
-    [layerZ]
-  );
-  const above = useMemo(
-    () => new THREE.Plane(new THREE.Vector3(0, 0, -1), layerZ),
-    [layerZ]
-  );
   return (
     <>
       <mesh geometry={geometry} castShadow receiveShadow>
@@ -136,7 +138,7 @@ function Model({
           roughness={0.32}
           envMapIntensity={0.9}
           side={THREE.DoubleSide}
-          clippingPlanes={[below]}
+          clippingPlanes={[below!]}
         />
       </mesh>
       <mesh geometry={geometry}>
@@ -146,7 +148,7 @@ function Model({
           opacity={0.22}
           depthWrite={false}
           side={THREE.DoubleSide}
-          clippingPlanes={[above]}
+          clippingPlanes={[above!]}
         />
       </mesh>
     </>

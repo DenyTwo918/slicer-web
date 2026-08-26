@@ -716,14 +716,18 @@ export default function Home() {
   );
   const allFit = viewModels.every((m) => m.fits);
 
-  const layerPreview = sliceResult
-    ? {
-        z: sliceResult.layers[sliceIdx].z,
-        data: sliceResult.layers[sliceIdx].data,
-        resX: sliceResult.resolutionX,
-        resY: sliceResult.resolutionY,
-      }
-    : null;
+  const layerPreview = useMemo(
+    () =>
+      sliceResult
+        ? {
+            z: sliceResult.layers[sliceIdx].z,
+            data: sliceResult.layers[sliceIdx].data,
+            resX: sliceResult.resolutionX,
+            resY: sliceResult.resolutionY,
+          }
+        : null,
+    [sliceResult, sliceIdx]
+  );
 
   const fmtTime = (sec: number) => {
     const h = Math.floor(sec / 3600);
