@@ -131,6 +131,7 @@ function LayerPlane({
         color="#4ade80"
         transparent
         opacity={0.95}
+        alphaTest={0.01}
         depthWrite={false}
         side={THREE.DoubleSide}
       />
@@ -218,13 +219,13 @@ function SupportMesh({
 
   if (boxes.length === 0) return null;
   return (
-    <instancedMesh
-      ref={meshRef}
-      args={[geometry, undefined, boxes.length]}
-      frustumCulled={false}
-    >
-      <meshStandardMaterial color="#22c55e" transparent opacity={0.7} depthWrite={false} />
-    </instancedMesh>
+      <instancedMesh
+        ref={meshRef}
+        args={[geometry, undefined, boxes.length]}
+        frustumCulled={false}
+      >
+        <meshStandardMaterial color="#22c55e" transparent opacity={0.75} />
+      </instancedMesh>
   );
 }
 
@@ -291,8 +292,9 @@ function Model({
       <mesh geometry={geometry}>
         <meshStandardMaterial
           color="#9fb4d8"
+          wireframe
           transparent
-          opacity={0.22}
+          opacity={0.35}
           depthWrite={false}
           side={THREE.DoubleSide}
           clippingPlanes={[above!]}

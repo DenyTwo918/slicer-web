@@ -96,6 +96,35 @@ function fillCircle(layer: Uint8Array, cx: number, cy: number, r: number, W: num
   }
 }
 
+/** Vyplní kruh JEN tam, kde model není (orig = 0) — podpory neprocházejí modelem. */
+function fillCircleIfEmpty(
+  layer: Uint8Array,
+  mask: Uint8Array,
+  orig: Uint8Array,
+  cx: number,
+  cy: number,
+  r: number,
+  W: number,
+  H: number
+) {
+  const r2 = r * r;
+  const x0 = Math.max(0, Math.floor(cx - r));
+  const x1 = Math.min(W - 1, Math.ceil(cx + r));
+  const y0 = Math.max(0, Math.floor(cy - r));
+  const y1 = Math.min(H - 1, Math.ceil(cy + r));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cx;
+      const dy = y - cy;
+      const idx = y * W + x;
+      if (dx * dx + dy * dy <= r2 && !orig[idx]) {
+        layer[idx] = 1;
+        mask[idx] = 1;
+      }
+    }
+  }
+}
+
 export interface SupportResult {
   result: SliceResult;
   /** maska podpor — 1 = pixel přidaný podporami (per vrstva) */
@@ -144,12 +173,12 @@ export function generateSupports(
     }
   }
 
-  // sloupy od desky (vrstva 0) po vrchní vrstvu s podpěrou
+  // sloupy od desky (vrstva 0) po vrchní vrstvu s podpěrou — jen v prázdném prostoru
+  const orig = slice.layers.map((l) => l.data);
   for (const p of pillars) {
     for (let li = 0; li <= p.top; li++) {
       const r = li === p.top ? tip : radius;
-      fillCircle(layers[li], p.x, p.y, r, W, H);
-      fillCircle(mask[li], p.x, p.y, r, W, H);
+      fillCircleIfEmpty(layers[li], mask[li], orig[li], p.x, p.y, r, W, H);
     }
   }
 
