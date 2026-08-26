@@ -1,144 +1,198 @@
 import type { SliceResult } from "./slice";
 import { nativeReady, wasmDilate } from "./native";
 
+/**
+ * SLA podpory — Chitubox model (2026-08-26, po researchu):
+ *
+ *   TIP (kontaktní bod, malý Ø)          ← dotyk s modelem
+ *   ┃ TOP/MIDDLE sloup — VŽDY SVISLÝ     ← zužuje se nahoru
+ *   ┃                                    ← kolizní kontrola celé cesty
+ *   ▙ BOTTOM patka / deska
+ *
+ * Pravidla (dle Chitubox docs):
+ *  • Podpora se umístí JEN když má od desky ke kotvě VOLNOU SVISLOU CESTU
+ *    (jinak se kotva přeskočí — „Spacing From Model")
+ *  • Sloup je rovný, mírně se rozšiřuje k dolů (stabilita)
+ *  • Stabilita souboru = PŘÍČNÉ VZPĚRY (cross bracing) mezi sousedy — X vzory
+ */
+
 export interface SupportOptions {
   enabled: boolean;
-  /** max. povolený přesah mezi vrstvami v px (1 px ≈ 0,13 mm při naší slicovací rozlišení) */
-  overhangPx?: number;
-  /** poloměr sloupu podpory v px */
+  /** poloměr sloupu (px) */
   radiusPx?: number;
-  /** poloměr špičky (kontakt s modelem) v px */
+  /** poloměr špičky (px) */
   tipPx?: number;
-  /** minimální velikost ostrůvku, který se podepírá (px) */
-  minComponentPx?: number;
-}
-
-const DEFAULTS = {
-  overhangPx: 1,
-  radiusPx: 8, // ~1 mm
-  tipPx: 4,
-  minComponentPx: 3,
-};
-
-/** Dilatace binárního rastru (box r×r) — "kde už bylo pod tím".
- *  S WASM kernely (SIMD) jde ~4–10× rychleji; jinak JS fallback. */
-function dilate(src: Uint8Array, W: number, H: number, r: number): Uint8Array {
-  if (nativeReady()) return wasmDilate(src, W, H, r);
-  const out = new Uint8Array(W * H);
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      if (!src[y * W + x]) continue;
-      const x0 = Math.max(0, x - r);
-      const x1 = Math.min(W - 1, x + r);
-      const y0 = Math.max(0, y - r);
-      const y1 = Math.min(H - 1, y + r);
-      for (let yy = y0; yy <= y1; yy++) {
-        out.fill(1, yy * W + x0, yy * W + x1 + 1);
-      }
-    }
-  }
-  return out;
-}
-
-/** Flood-fill komponenty (8-okolí); vrací kotvu = první pixel komponenty
- *  (přímo NA přesahu — ne těžiště, které může být v díře). */
-function components(
-  mask: Uint8Array,
-  W: number,
-  H: number,
-  minSize: number
-): { x: number; y: number; size: number }[] {
-  const res: { x: number; y: number; size: number }[] = [];
-  const stack: number[] = [];
-  for (let p = 0; p < W * H; p++) {
-    if (!mask[p]) continue;
-    // flood
-    const seedX = p % W;
-    const seedY = (p / W) | 0;
-    stack.length = 0;
-    stack.push(p);
-    mask[p] = 0;
-    let n = 0;
-    while (stack.length) {
-      const idx = stack.pop()!;
-      const x = idx % W;
-      const y = (idx / W) | 0;
-      n++;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-          const ni = ny * W + nx;
-          if (mask[ni]) {
-            mask[ni] = 0;
-            stack.push(ni);
-          }
-        }
-      }
-    }
-    if (n >= minSize) {
-      res.push({ x: seedX, y: seedY, size: n });
-    }
-  }
-  return res;
-}
-
-function fillCircle(layer: Uint8Array, cx: number, cy: number, r: number, W: number, H: number) {
-  const r2 = r * r;
-  const x0 = Math.max(0, Math.floor(cx - r));
-  const x1 = Math.min(W - 1, Math.ceil(cx + r));
-  const y0 = Math.max(0, Math.floor(cy - r));
-  const y1 = Math.min(H - 1, Math.ceil(cy + r));
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const dx = x - cx;
-      const dy = y - cy;
-      if (dx * dx + dy * dy <= r2) layer[y * W + x] = 1;
-    }
-  }
-}
-
-/** Vyplní kruh JEN tam, kde model není (orig = 0) — podpory neprocházejí modelem. */
-function fillCircleIfEmpty(
-  layer: Uint8Array,
-  mask: Uint8Array,
-  orig: Uint8Array,
-  cx: number,
-  cy: number,
-  r: number,
-  W: number,
-  H: number
-) {
-  const r2 = r * r;
-  const x0 = Math.max(0, Math.floor(cx - r));
-  const x1 = Math.min(W - 1, Math.ceil(cx + r));
-  const y0 = Math.max(0, Math.floor(cy - r));
-  const y1 = Math.min(H - 1, Math.ceil(cy + r));
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const dx = x - cx;
-      const dy = y - cy;
-      const idx = y * W + x;
-      if (dx * dx + dy * dy <= r2 && !orig[idx]) {
-        layer[idx] = 1;
-        mask[idx] = 1;
-      }
-    }
-  }
+  legacyOverhangPx?: number;
+  legacyMinComponentPx?: number;
 }
 
 export interface SupportResult {
   result: SliceResult;
-  /** maska podpor — 1 = pixel přidaný podporami (per vrstva) */
   mask: Uint8Array[];
 }
 
+const DEFAULTS = {
+  radiusPx: 3,
+  tipPx: 2,
+};
+
+/** Abstrakce: dotaz na model + plnění — bitmapy i full-res depth mapy. */
+export interface PillarCtx {
+  N: number;
+  modelAt(li: number, x: number, y: number): boolean;
+  fill(li: number, cx: number, cy: number, r: number): void;
+}
+
+export interface PlacedPillar {
+  x: number;
+  y: number;
+  top: number;
+}
+
+/** kruh kolem (x,y) zasahuje do modelu? */
+function circleBlocked(
+  ctx: PillarCtx,
+  li: number,
+  x: number,
+  y: number,
+  r: number,
+  W: number,
+  H: number
+): boolean {
+  const r2 = r * r;
+  const x0 = Math.max(0, x - r);
+  const x1 = Math.min(W - 1, x + r);
+  const y0 = Math.max(0, y - r);
+  const y1 = Math.min(H - 1, y + r);
+  for (let yy = y0; yy <= y1; yy++) {
+    for (let xx = x0; xx <= x1; xx++) {
+      const dx = xx - x;
+      const dy = yy - y;
+      if (dx * dx + dy * dy <= r2 && ctx.modelAt(li, xx, yy)) return true;
+    }
+  }
+  return false;
+}
+
 /**
- * Automatické podpory: sloupy od desky ke kotvám (přesahy detekované
- * z meshí — viz lib/supportDetect.ts; kotvy jsou mimo model a sloupy se
- * plní JEN do prázdného prostoru, takže neprocházejí stěnami).
- * Vrací i masku přidaných pixelů (pro 3D zobrazení podpor zvlášť).
+ * Umístění sloupů (Chitubox „Spacing From Model"): kotva dostane sloup jen,
+ * pokud má od desky ke špičce volnou svislou cestu. Jinak se kotva přeskočí.
+ * Špička = tipPx, sloup se mírně rozšiřuje k dolů (radiusPx → radiusBottomPx).
+ */
+export function placeSupports(
+  anchors: { x: number; y: number; layer: number }[],
+  ctx: PillarCtx,
+  radiusPx: number,
+  tipPx: number,
+  W: number,
+  H: number,
+  radiusBottomPx?: number
+): PlacedPillar[] {
+  const rBot = Math.max(radiusPx, Math.round((radiusBottomPx ?? radiusPx * 1.4)));
+  const sorted = [...anchors].sort((a, b) => b.layer - a.layer);
+  const placed: PlacedPillar[] = [];
+
+  for (const a of sorted) {
+    if (a.x < 0 || a.y < 0 || a.x >= W || a.y >= H) continue;
+    const top = Math.min(Math.max(0, a.layer), ctx.N - 1);
+
+    // kolizní kontrola celé svislé cesty (deska → špička)
+    let clear = true;
+    for (let li = 0; li <= top; li++) {
+      const r = li === top ? tipPx : radiusPx;
+      if (circleBlocked(ctx, li, a.x, a.y, r, W, H)) {
+        clear = false;
+        break;
+      }
+    }
+    if (!clear) continue; // kotva přeskočena — cesta blokovaná modelem
+
+    placed.push({ x: a.x, y: a.y, top });
+
+    // špička
+    ctx.fill(top, a.x, a.y, tipPx);
+    // sloup s mírným rozšířením k dolů
+    for (let li = top - 1; li >= 0; li--) {
+      const f = top > 0 ? 1 - li / top : 0;
+      const r = Math.round(radiusPx + (rBot - radiusPx) * f);
+      ctx.fill(li, a.x, a.y, r);
+    }
+  }
+  return placed;
+}
+
+/**
+ * Příčné vzpěry (Chitubox „Cross Bracing"): X-diagonály mezi sousedními
+ * sloupy pro stabilitu — tenké čáry, od výšky lo po hi nižšího ze dvou sloupů.
+ */
+export interface BraceLine {
+  x1: number;
+  y1: number;
+  l1: number;
+  x2: number;
+  y2: number;
+  l2: number;
+}
+
+/** Spočítá X-vzpěry mezi sousedními sloupy (max maxXYPx od sebe). */
+export function crossBraceLines(
+  pillars: PlacedPillar[],
+  maxXYPx: number
+): BraceLine[] {
+  const lines: BraceLine[] = [];
+  const used = new Set<string>();
+  for (let i = 0; i < pillars.length; i++) {
+    const cand: { j: number; d: number }[] = [];
+    for (let j = 0; j < pillars.length; j++) {
+      if (i === j) continue;
+      const d = Math.hypot(pillars[j].x - pillars[i].x, pillars[j].y - pillars[i].y);
+      if (d > 0 && d <= maxXYPx) cand.push({ j, d });
+    }
+    cand.sort((a, b) => a.d - b.d);
+    for (const { j } of cand.slice(0, 3)) {
+      const key = i < j ? `${i}-${j}` : `${j}-${i}`;
+      if (used.has(key)) continue;
+      used.add(key);
+      const A = pillars[i];
+      const B = pillars[j];
+      const topMin = Math.min(A.top, B.top);
+      const lo = Math.max(2, Math.floor(topMin * 0.35));
+      const hi = Math.max(lo + 1, topMin - 2);
+      if (hi <= lo) continue;
+      lines.push({ x1: A.x, y1: A.y, l1: lo, x2: B.x, y2: B.y, l2: hi });
+      lines.push({ x1: A.x, y1: A.y, l1: hi, x2: B.x, y2: B.y, l2: lo });
+    }
+  }
+  return lines;
+}
+
+/** Vyplní úsečku vzpěry (tenký kruh na každém kroku, jen do prázdného prostoru). */
+function fillBraceLine(
+  ctx: PillarCtx,
+  x1: number,
+  y1: number,
+  l1: number,
+  x2: number,
+  y2: number,
+  l2: number,
+  r: number,
+  W: number,
+  H: number
+) {
+  const steps = Math.max(Math.abs(l2 - l1), Math.round(Math.hypot(x2 - x1, y2 - y1)), 1);
+  for (let s = 0; s <= steps; s++) {
+    const f = s / steps;
+    const li = Math.round(l1 + (l2 - l1) * f);
+    const cx = Math.round(x1 + (x2 - x1) * f);
+    const cy = Math.round(y1 + (y2 - y1) * f);
+    if (li < 0 || li >= ctx.N || cx < 0 || cy < 0 || cx >= W || cy >= H) continue;
+    ctx.fill(li, cx, cy, r);
+  }
+}
+
+/**
+ * Automatické podpory (slice pipeline): kotvy → svislé sloupy → vzpěry.
+ * Vrací i masku přidaných pixelů (pro 3D zobrazení podpor).
  */
 export function generateSupports(
   slice: SliceResult,
@@ -153,54 +207,46 @@ export function generateSupports(
   }
   const W = slice.resolutionX;
   const H = slice.resolutionY;
-  const overhangPx = opts.overhangPx ?? DEFAULTS.overhangPx;
   const radius = opts.radiusPx ?? DEFAULTS.radiusPx;
   const tip = opts.tipPx ?? DEFAULTS.tipPx;
-  const minSize = opts.minComponentPx ?? DEFAULTS.minComponentPx;
 
   const layers = slice.layers.map((l) => new Uint8Array(l.data));
   const mask = slice.layers.map(() => new Uint8Array(W * H));
-  const N = layers.length;
 
-  const pillars: { x: number; y: number; top: number }[] = [];
-
-  if (anchors) {
-    // moderní cesta: kotvy z meshí (úhlová detekce) — žádný pixel-šum
-    for (const a of anchors) {
-      if (a.x < 0 || a.y < 0 || a.x >= W || a.y >= H) continue;
-      pillars.push({ x: a.x, y: a.y, top: Math.min(Math.max(0, a.layer), N - 1) });
-    }
-  } else {
-    // fallback (testy/stará cesta): pixel-diff přesahy + ostrůvky
-    for (let i = 1; i < N; i++) {
-      const cur = layers[i];
-      const prevDil = dilate(layers[i - 1], W, H, overhangPx);
-      // přesahové pixely: on tady, nebyl pod tím (dilatovaně)
-      const oh = new Uint8Array(W * H);
-      for (let p = 0; p < W * H; p++) {
-        oh[p] = cur[p] && !prevDil[p] ? 1 : 0;
-      }
-      const comps = components(oh, W, H, minSize);
-      for (const c of comps) {
-        pillars.push({ x: c.x, y: c.y, top: i });
-      }
-    }
-  }
-
-  // sloupy od desky (vrstva 0) po vrchní vrstvu s podpěrou — jen v prázdném prostoru.
-  // PrusaSlicer-style routing: když sloup narazí na model, ukloní se (bridge) a obejde ho.
-  // STROMY: nejvyšší sloup = kmen, ostatní se k němu sklánějí a spojují se s ním.
-  const orig = slice.layers.map((l) => l.data);
-  const sorted = [...pillars].sort((a, b) => b.top - a.top);
-  const trunks: { x: number; y: number }[][] = []; // [vrstva] → středy kmenů
   const ctx: PillarCtx = {
     N: layers.length,
-    modelAt: (li, x, y) => orig[li][y * W + x] !== 0,
-    fill: (li, cx, cy, r) => fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, r, W, H),
+    modelAt: (li, x, y) => slice.layers[li].data[y * W + x] !== 0,
+    fill: (li, cx, cy, r) =>
+      fillCircleIfEmpty(layers[li], mask[li], slice.layers[li].data, cx, cy, r, W, H),
   };
-  for (const p of sorted) {
-    routePillar(ctx, p.x, p.y, p.top, radius, tip, W, H, trunks);
+
+  let pillars: PlacedPillar[] = [];
+  if (anchors) {
+    // moderní cesta: kotvy z meshí (úhlová detekce) — jen volné svislé cesty
+    pillars = placeSupports(anchors, ctx, radius, tip, W, H);
+  } else {
+    // fallback (stará cesta bez kotev): každá vrstva vs předchozí (zřídka použito)
+    const overhangPx = opts.legacyOverhangPx ?? 1;
+    const minSize = opts.legacyMinComponentPx ?? 12;
+    const legacy: { x: number; y: number; layer: number }[] = [];
+    for (let i = 1; i < layers.length; i++) {
+      const cur = layers[i];
+      const prevDil = nativeReady()
+        ? wasmDilate(layers[i - 1], W, H, overhangPx)
+        : dilate(layers[i - 1], W, H, overhangPx);
+      const oh = new Uint8Array(W * H);
+      for (let p = 0; p < W * H; p++) oh[p] = cur[p] && !prevDil[p] ? 1 : 0;
+      for (const c of components(oh, W, H, minSize)) legacy.push({ x: c.x, y: c.y, layer: i });
+    }
+    pillars = placeSupports(legacy, ctx, radius, tip, W, H);
   }
+
+  // příčné vzpěry mezi sousedy (max ~15 mm od sebe)
+  const pxPerMm = 223.642 / W;
+  const maxXY = Math.max(8, Math.round(15 / pxPerMm));
+  const braceR = Math.max(1, Math.round(0.5 / pxPerMm)); // ~0,5 mm
+  const lines = crossBraceLines(pillars, maxXY);
+  for (const L of lines) fillBraceLine(ctx, L.x1, L.y1, L.l1, L.x2, L.y2, L.l2, braceR, W, H);
 
   return {
     result: {
@@ -213,176 +259,91 @@ export function generateSupports(
   };
 }
 
-/**
- * Abstrakce routingu: dotaz na model + plnění — funguje pro bitmapy
- * (slice pipeline) i pro full-res depth mapy (streaming export).
- */
-export interface PillarCtx {
-  /** počet vrstev */
-  N: number;
-  /** je pixel součástí modelu ve vrstvě li? */
-  modelAt(li: number, x: number, y: number): boolean;
-  /** vyplň kruh podpory (r) ve vrstvě li — jen do prázdného prostoru */
-  fill(li: number, cx: number, cy: number, r: number): void;
+// ------------------------------------------------------------- pomocné
+
+function dilate(src: Uint8Array, W: number, H: number, r: number): Uint8Array {
+  const out = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (!src[y * W + x]) continue;
+      const x0 = Math.max(0, x - r);
+      const x1 = Math.min(W - 1, x + r);
+      const y0 = Math.max(0, y - r);
+      const y1 = Math.min(H - 1, y + r);
+      for (let yy = y0; yy <= y1; yy++) out.fill(1, yy * W + x0, yy * W + x1 + 1);
+    }
+  }
+  return out;
 }
 
-/**
- * Sloup podpory s routingem (jako stromové podpory v PrusaSliceru).
- * Špička se dotýká modelu u kotvy; sloup klesá dolů a když narazí na model,
- * ukloní se (hledá volné místo v okolí s lookaheadem) a obejde ho, aby došel
- * až k desce. Vrací trasu [(li,x,y)...] — pro stromové spojování i full-res.
- */
-function routePillar(
-  ctx: PillarCtx,
-  ax: number,
-  ay: number,
-  topLayer: number,
-  radius: number,
-  tip: number,
+/** flood-fill komponenty (fallback detekce ostrůvků) */
+function components(
+  img: Uint8Array,
   W: number,
   H: number,
-  trunks?: { x: number; y: number }[][]
-): { li: number; x: number; y: number; tip: boolean }[] {
-  const N = ctx.N;
-  // max. úhyb sloupu: ~7,5 mm (v px slicovacího rastru)
-  const pxPerMm = 223.642 / W;
-  const maxDetourPx = Math.max(4, Math.round(7.5 / pxPerMm));
-  // spojení se kmenem: středy blíž než 2× poloměr = kruhy se překrývají
-  const mergeDistPx = radius * 2;
-  // kruh kolem (x,y) v layer li zasahuje do modelu?
-  const blockedAt = (li: number, x: number, y: number, r: number): boolean => {
-    const r2 = r * r;
-    const x0 = Math.max(0, x - r);
-    const x1 = Math.min(W - 1, x + r);
-    const y0 = Math.max(0, y - r);
-    const y1 = Math.min(H - 1, y + r);
-    for (let yy = y0; yy <= y1; yy++) {
-      for (let xx = x0; xx <= x1; xx++) {
-        const dx = xx - x;
-        const dy = yy - y;
-        if (dx * dx + dy * dy <= r2 && ctx.modelAt(li, xx, yy)) return true;
-      }
-    }
-    return false;
-  };
-  // dá se z (x,y) v layer li klesat dál? (lookahead vrstev)
-  const descentFree = (li: number, x: number, y: number, r: number, k: number): boolean => {
-    for (let i = li; i >= Math.max(0, li - k); i--) {
-      if (blockedAt(i, x, y, r)) return false;
-    }
-    return true;
-  };
-
-  // špička vždy u kotvy (dotýká se modelu — to je správně)
-  ctx.fill(topLayer, ax, ay, tip);
-
-  // nejbližší kmen na dané vrstvě
-  const nearestTrunk = (li: number, x: number, y: number) => {
-    if (!trunks || !trunks[li]) return null;
-    let bestD = Infinity;
-    let bx = -1;
-    let by = -1;
-    for (const c of trunks[li]) {
-      const d = Math.hypot(c.x - x, c.y - y);
-      if (d < bestD) {
-        bestD = d;
-        bx = c.x;
-        by = c.y;
-      }
-    }
-    return bestD === Infinity ? null : { d: bestD, x: bx, y: by };
-  };
-
-  const trace: { li: number; x: number; y: number; tip: boolean }[] = [
-    { li: topLayer, x: ax, y: ay, tip: true },
-  ];
-  let cx = ax;
-  let cy = ay;
-  // rovná zóna pod špičkou: sloup zůstává přesně pod kontaktem s modelem,
-  // ať „nepodklouzne" od podhledu, který má držet
-  const straightZone = Math.max(3, radius);
-  for (let li = Math.min(topLayer - 1, N - 1); li >= 0; li--) {
-    // 1) spojení se kmenem? (až mimo rovnou zónu pod špičkou)
-    const t = li <= topLayer - straightZone ? nearestTrunk(li, cx, cy) : null;
-    if (t && t.d <= mergeDistPx) {
-      trace.push({ li, x: cx, y: cy, tip: false });
-      if (trunks) {
-        for (const t2 of trace) {
-          (trunks[t2.li] ??= []).push({ x: t2.x, y: t2.y });
-        }
-      }
-      return trace; // spojeno — dál pokračuje kmen
-    }
-
-    // 2) blokováno → úhyb: hledej volné místo v prstencích (od středu ven)
-    if (blockedAt(li, cx, cy, radius)) {
-      let found = false;
-      for (let ring = 1; ring <= maxDetourPx && !found; ring++) {
-        for (let dy = -ring; dy <= ring && !found; dy++) {
-          for (let dx = -ring; dx <= ring && !found; dx++) {
-            if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
-            const nx = cx + dx;
-            const ny = cy + dy;
-            if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-            if (!blockedAt(li, nx, ny, radius) && descentFree(li, nx, ny, radius, 15)) {
-              cx = nx;
-              cy = ny;
-              found = true;
-            }
+  minSize: number
+): { x: number; y: number }[] {
+  const seen = new Uint8Array(W * H);
+  const out: { x: number; y: number }[] = [];
+  const stack: number[] = [];
+  for (let p0 = 0; p0 < W * H; p0++) {
+    if (!img[p0] || seen[p0]) continue;
+    stack.length = 0;
+    stack.push(p0);
+    seen[p0] = 1;
+    let count = 0;
+    let sx = 0;
+    let sy = 0;
+    while (stack.length) {
+      const p = stack.pop()!;
+      count++;
+      sx += p % W;
+      sy += (p / W) | 0;
+      const x = p % W;
+      const y = (p / W) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+          const np = ny * W + nx;
+          if (img[np] && !seen[np]) {
+            seen[np] = 1;
+            stack.push(np);
           }
         }
       }
-      if (!found) break; // zaseknutý — sloup končí (model je moc blízko)
-      ctx.fill(li, cx, cy, radius);
-      trace.push({ li, x: cx, y: cy, tip: false });
-      continue;
     }
-
-    // 3) volno → skláněj se ke kmenu (max 1 px/vrstvu ≈ šikmý most),
-    //    jen pokud kmen dosáhne dřív, než sloup dojde k desce
-    if (t && t.d <= mergeDistPx + li * 1) {
-      const nx = cx + Math.sign(t.x - cx);
-      const ny = cy + Math.sign(t.y - cy);
-      if (!blockedAt(li, nx, ny, radius)) {
-        cx = nx;
-        cy = ny;
-        ctx.fill(li, cx, cy, radius);
-        trace.push({ li, x: cx, y: cy, tip: false });
-        continue;
-      }
-    }
-    ctx.fill(li, cx, cy, radius);
-    trace.push({ li, x: cx, y: cy, tip: false });
+    if (count >= minSize) out.push({ x: Math.round(sx / count), y: Math.round(sy / count) });
   }
-
-  // sloup dokončen → registruj trasu jako kmen pro budoucí sloupy
-  if (trunks) {
-    for (const t2 of trace) {
-      (trunks[t2.li] ??= []).push({ x: t2.x, y: t2.y });
-    }
-  }
-  return trace;
+  return out;
 }
 
-/**
- * Routing podpor POUZE s trasou (bez plnění bitmap) — pro full-res streaming
- * export, kde vrstvy nejsou materializované. `modelAt` dotazuje depth mapy.
- */
-export function routeSupportTraces(
-  anchors: { x: number; y: number; layer: number }[],
-  ctx: PillarCtx,
-  radiusPx: number,
-  tipPx: number,
+/** vyplní kruh jen do prázdna (nepřepisuje model) */
+function fillCircleIfEmpty(
+  layer: Uint8Array,
+  mask: Uint8Array | null,
+  orig: Uint8Array,
+  cx: number,
+  cy: number,
+  r: number,
   W: number,
   H: number
-): { li: number; x: number; y: number; tip: boolean }[][] {
-  const sorted = [...anchors].sort((a, b) => b.layer - a.layer);
-  const trunks: { x: number; y: number }[][] = [];
-  const traces: { li: number; x: number; y: number; tip: boolean }[][] = [];
-  for (const a of sorted) {
-    if (a.x < 0 || a.y < 0 || a.x >= W || a.y >= H) continue;
-    const top = Math.min(Math.max(0, a.layer), ctx.N - 1);
-    traces.push(routePillar(ctx, a.x, a.y, top, radiusPx, tipPx, W, H, trunks));
+) {
+  const r2 = r * r;
+  const x0 = Math.max(0, cx - r);
+  const x1 = Math.min(W - 1, cx + r);
+  const y0 = Math.max(0, cy - r);
+  const y1 = Math.min(H - 1, cy + r);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cx;
+      const dy = y - cy;
+      const idx = y * W + x;
+      if (dx * dx + dy * dy <= r2 && !orig[idx]) {
+        layer[idx] = 1;
+        if (mask) mask[idx] = 1;
+      }
+    }
   }
-  return traces;
 }

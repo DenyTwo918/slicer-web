@@ -10,7 +10,7 @@ import {
   wasmDilate,
 } from "./native";
 import { detectSupportAnchors } from "./supportDetect";
-import { routeSupportTraces, type PillarCtx } from "./supports";
+import { placeSupports, crossBraceLines, type PillarCtx, type PlacedPillar, type BraceLine } from "./supports";
 import {
   encodeLayerToMachineInternal,
   encodeSceneSlice,
@@ -194,7 +194,8 @@ export async function buildPm7FullRes(
   const layerZQ: number[] = [];
   for (let i = 0; i < numLayers; i++) layerZQ.push((0.05 + i * settings.layerHeight) * kScale);
 
-  let traces: { li: number; x: number; y: number; tip: boolean }[][] = [];
+  let placed: PlacedPillar[] = [];
+  let braceLines: BraceLine[] = [];
   if (settings.supports) {
     const anchors = detectSupportAnchors(models, {
       layerHeight: settings.layerHeight,
@@ -219,7 +220,10 @@ export async function buildPm7FullRes(
       },
       fill: () => {},
     };
-    traces = routeSupportTraces(anchors, frCtx, radiusPx, tipPx, sliceW, sliceH);
+    // Chitubox model: jen kotvy s volnou svislou cestou (blokované se přeskočí)
+    placed = placeSupports(anchors, frCtx, radiusPx, tipPx, sliceW, sliceH);
+    const maxXY = Math.max(8, Math.round(15 / pxPerMmSlice));
+    braceLines = crossBraceLines(placed, maxXY);
   }
 
   // raft footprint: model na vrstvě 0 (slice res) → dilatace o margin
@@ -253,36 +257,42 @@ export async function buildPm7FullRes(
   const holeBottom = holeR > 0 ? Math.max(0, Math.floor(numLayers * 0.05)) : -1;
   const holeTop = holeR > 0 ? Math.max(0, Math.floor(numLayers * 0.85)) : -1;
 
-  // trasy podpor podle vrstev — [vrstva] → seznam (x,y,r) ve full-res px
-  const radiusFull = Math.max(2, Math.round(settings.supportRadiusMm / pxPerMmSlice)) * scale;
-  const tipFull = Math.max(1, Math.round(settings.supportTipMm / pxPerMmSlice)) * scale;
+  // sloupy podle vrstev — [vrstva] → seznam (x,y,r) ve full-res px
+  const pxPerMmFull = printer.printX / resX;
+  const radiusTopFull = Math.max(2, Math.round(settings.supportRadiusMm / pxPerMmFull));
+  const tipFull = Math.max(1, Math.round(settings.supportTipMm / pxPerMmFull));
+  const radiusBotFull = Math.round(radiusTopFull * 1.4);
   const pillarsByLayer: Map<number, { x: number; y: number; r: number }[]> = new Map();
-  for (const trace of traces) {
-    for (let k = 0; k < trace.length; k++) {
-      const seg = trace[k];
-      const li = seg.li;
+  for (const p of placed) {
+    for (let li = 0; li <= p.top; li++) {
+      const f = p.top > 0 ? 1 - li / p.top : 0;
+      const r =
+        li === p.top
+          ? tipFull
+          : Math.round(radiusTopFull + (radiusBotFull - radiusTopFull) * f);
       const arr = pillarsByLayer.get(li) ?? [];
-      arr.push({
-        x: seg.x * scale,
-        y: seg.y * scale,
-        r: seg.tip ? tipFull : radiusFull,
-      });
+      arr.push({ x: p.x * scale, y: p.y * scale, r });
       pillarsByLayer.set(li, arr);
-      // propojit mezery mezi trasovanými vrstvami (plynulý most)
-      if (k > 0) {
-        const prev = trace[k - 1];
-        const gap = seg.li - prev.li;
-        for (let s = 1; s < gap; s++) {
-          const f = s / gap;
-          const arrI = pillarsByLayer.get(prev.li + s) ?? [];
-          arrI.push({
-            x: Math.round((prev.x + (seg.x - prev.x) * f) * scale),
-            y: Math.round((prev.y + (seg.y - prev.y) * f) * scale),
-            r: radiusFull,
-          });
-          pillarsByLayer.set(prev.li + s, arrI);
-        }
-      }
+    }
+  }
+
+  // vzpěry — tenké čáry mezi sousedy (×scale)
+  const braceR = Math.max(1, Math.round(0.5 / pxPerMmFull));
+  const bracesByLayer: Map<number, { x: number; y: number; r: number }[]> = new Map();
+  for (const L of braceLines) {
+    const steps = Math.max(
+      Math.abs(L.l2 - L.l1) * scale,
+      Math.round(Math.hypot((L.x2 - L.x1) * scale, (L.y2 - L.y1) * scale)),
+      1
+    );
+    for (let s = 0; s <= steps; s++) {
+      const f = s / steps;
+      const li = Math.round(L.l1 + (L.l2 - L.l1) * f);
+      const cx = Math.round((L.x1 + (L.x2 - L.x1) * f) * scale);
+      const cy = Math.round((L.y1 + (L.y2 - L.y1) * f) * scale);
+      const arr = bracesByLayer.get(li) ?? [];
+      arr.push({ x: cx, y: cy, r: braceR });
+      bracesByLayer.set(li, arr);
     }
   }
 
@@ -353,6 +363,31 @@ export async function buildPm7FullRes(
           for (let xx = x0; xx <= x1; xx++) {
             const idx = rowF + xx;
             if (res.data[idx]) continue; // model má přednost
+            const dx = xx - c.x;
+            const dy = yy - c.y;
+            if (dx * dx + dy * dy <= r2 && !(depth.front[idx] < zq && zq < depth.back[idx])) {
+              res.data[idx] = 255;
+              count++;
+            }
+          }
+        }
+      }
+    }
+
+    // příčné vzpěry (tenké čáry mezi sloupy)
+    const br = bracesByLayer.get(i);
+    if (br) {
+      for (const c of br) {
+        const r2 = c.r * c.r;
+        const x0 = Math.max(0, c.x - c.r);
+        const x1 = Math.min(resX - 1, c.x + c.r);
+        const y0 = Math.max(0, c.y - c.r);
+        const y1 = Math.min(resY - 1, c.y + c.r);
+        for (let yy = y0; yy <= y1; yy++) {
+          const rowF = yy * resX;
+          for (let xx = x0; xx <= x1; xx++) {
+            const idx = rowF + xx;
+            if (res.data[idx]) continue;
             const dx = xx - c.x;
             const dy = yy - c.y;
             if (dx * dx + dy * dy <= r2 && !(depth.front[idx] < zq && zq < depth.back[idx])) {

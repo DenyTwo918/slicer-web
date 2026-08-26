@@ -1,7 +1,5 @@
 /**
- * Test routingu podpor (PrusaSlicer-style úhyb sloupu) na syntetických vrstvách.
- * Police: spodní blok (vrstvy 0..49, x 0..60px), horní blok (vrstvy 80..119, x 30..120px).
- * Kotva pod horním blokem NAD spodním blokem → sloup se musí uklonit (x>63) a dojít k desce.
+ * Test SLA podpor (Chitubox model): svislé sloupy + kolizní kontrola + vzpěry.
  * Spuštění: npx tsx scripts/test-routing.ts
  */
 import { generateSupports } from "../lib/supports";
@@ -40,9 +38,13 @@ const check = (name: string, ok: boolean, detail = "") => {
 
 (async () => {
   const slice = buildSlice();
-  // kotva pod horním blokem NAD spodním blokem — musí uhnout doprava (x > 63)
-  const anchor = { x: 50, y: 150, layer: 79 };
-  const sr = generateSupports(slice, { enabled: true, radiusPx: 3, tipPx: 2 }, [anchor]);
+  // A: volná cesta k desce (x=90 > spodní blok) — musí dostat sloup
+  // B: cesta blokovaná spodním blokem (x=50 < 63) — musí být PŘESKOČENA
+  const anchors = [
+    { x: 90, y: 150, layer: 79 },
+    { x: 50, y: 150, layer: 79 },
+  ];
+  const sr = generateSupports(slice, { enabled: true, radiusPx: 3, tipPx: 2 }, anchors);
   const orig = slice.layers.map((l) => l.data);
 
   // 1) maska se nesmí překrývat s modelem
@@ -53,34 +55,19 @@ const check = (name: string, ok: boolean, detail = "") => {
   }
   check("maska podpor se nekryje s modelem", overlap === 0, `překryv ${overlap} px`);
 
-  // 2) sloup je SOUVISLÝ od vrstvy 79 dolů k 0
-  let contiguous = true;
-  for (let i = 0; i <= 79; i++) {
-    let has = false;
-    for (let p = 0; p < sr.mask[i].length; p++) {
-      if (sr.mask[i][p]) { has = true; break; }
-    }
-    if (!has) { contiguous = false; console.log(`  chybí maska na vrstvě ${i}`); break; }
-  }
-  check("sloup je souvislý (vrstvy 79..0)", contiguous);
+  // 2) volný anchor má sloup až do vrstvy 0
+  let aAtPlate = false;
+  for (let yy = 140; yy <= 160 && !aAtPlate; yy++)
+    for (let xx = 80; xx <= 100 && !aAtPlate; xx++)
+      if (sr.mask[0][yy * W + xx]) aAtPlate = true;
+  check("volný sloup došel k desce", aAtPlate);
 
-  // 3) sloup došel k desce — maska na vrstvě 0 poblíž kotvy (po úhybu)
-  const m0 = sr.mask[0];
-  let atPlate = false;
-  for (let yy = 100; yy <= 200 && !atPlate; yy++) {
-    for (let xx = 30; xx <= 130 && !atPlate; xx++) {
-      if (m0[yy * W + xx]) atPlate = true;
-    }
-  }
-  check("sloup došel k desce (vrstva 0)", atPlate);
-
-  // 4) sloup se uhnul DOPRAVA (x > 63) — prošel kolem spodního bloku (jakýkoli řádek)
-  const m30 = sr.mask[30];
-  let detoured = false;
-  for (let yy = 100; yy <= 200 && !detoured; yy++) {
-    for (let xx = 64; xx <= 130 && !detoured; xx++) if (m30[yy * W + xx]) detoured = true;
-  }
-  check("sloup se uhnul kolem spodního bloku (x>63)", detoured);
+  // 3) blokovaný anchor byl přeskočen — žádné podpory v jeho okolí u desky
+  let bAlone = false;
+  for (let yy = Math.max(0, 150 - 12); yy <= Math.min(H - 1, 150 + 12) && !bAlone; yy++)
+    for (let xx = Math.max(0, 50 - 12); xx <= Math.min(W - 1, 50 + 12) && !bAlone; xx++)
+      if (sr.mask[0][yy * W + xx]) bAlone = true;
+  check("blokovaný anchor přeskočen (není u desky)", !bAlone);
 
   console.log(fails === 0 ? "\nHOTOVO — vse proselo" : `\n${fails} NESHOD`);
   process.exit(fails === 0 ? 0 : 1);
