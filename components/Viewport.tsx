@@ -63,7 +63,8 @@ function rasterToTexture(
   return tex;
 }
 
-/** Řezová rovina tisku — ukazuje aktuální vrstvu ve 3D (jako slicery). */
+/** Řezová rovina tisku — ukazuje aktuální vrstvu ve 3D (jako slicery).
+ *  Textura se vytvoří JEDNOU a při posuvu se jen přepisuje (žádné nové textury → plynulé). */
 function LayerPlane({
   preview,
   printer,
@@ -71,22 +72,58 @@ function LayerPlane({
   preview: LayerPreviewData | null;
   printer: PrinterProfile;
 }) {
+  const planeRef = useRef<THREE.Mesh>(null);
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
   useEffect(() => {
     if (!preview) {
-      setTexture(null);
+      if (planeRef.current) planeRef.current.visible = false;
       return;
     }
-    const tex = rasterToTexture(preview.data, preview.resX, preview.resY, 1, true);
-    setTexture(tex);
-    return () => {
-      tex.dispose();
-    };
-  }, [preview]);
+    if (!texture) {
+      const canvas = document.createElement("canvas");
+      canvas.width = preview.resX;
+      canvas.height = preview.resY;
+      canvasRef.current = canvas;
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.needsUpdate = true;
+      setTexture(tex);
+      return;
+    }
+    // přepiš existující canvas (Y flip)
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const img = ctx.createImageData(preview.resX, preview.resY);
+    for (let y = 0; y < preview.resY; y++) {
+      const sy = preview.resY - 1 - y;
+      for (let x = 0; x < preview.resX; x++) {
+        const v = preview.data[sy * preview.resX + x];
+        const o = (y * preview.resX + x) * 4;
+        img.data[o] = 255;
+        img.data[o + 1] = 255;
+        img.data[o + 2] = 255;
+        img.data[o + 3] = v;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    texture.needsUpdate = true;
+    if (planeRef.current) {
+      planeRef.current.position.z = preview.z + 0.02;
+      planeRef.current.visible = true;
+    }
+  }, [preview, texture]);
 
-  if (!preview) return null;
+  useEffect(() => {
+    return () => {
+      texture?.dispose();
+      canvasRef.current = null;
+    };
+  }, [texture]);
+
   return (
-    <mesh position={[0, 0, preview.z + 0.02]}>
+    <mesh ref={planeRef} position={[0, 0, 0]} visible={false}>
       <planeGeometry args={[printer.printX, printer.printY]} />
       <meshBasicMaterial
         map={texture ?? undefined}
@@ -101,7 +138,7 @@ function LayerPlane({
 }
 
 /** Objem tisku — vrstvy jako 3D (raft, podpory i model).
- *  Vykreslují se jen vrstvy pod aktuálním řezem (cutZ) — žádné clipping planes. */
+ *  Vykreslí se JEDNOU; při posuvu slideru se jen přepíná visible (žádný re-render → plynulé). */
 function PrintVolume({
   sliceResult,
   printer,
@@ -125,6 +162,16 @@ function PrintVolume({
     return arr;
   }, [sliceResult]);
 
+  const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
+
+  useEffect(() => {
+    meshRefs.current.forEach((mesh, i) => {
+      if (mesh && quads[i]) {
+        mesh.visible = cutZ === null || quads[i].z <= cutZ + 0.001;
+      }
+    });
+  }, [cutZ, quads]);
+
   useEffect(() => {
     return () => {
       quads.forEach((q) => q.tex.dispose());
@@ -133,22 +180,25 @@ function PrintVolume({
 
   return (
     <group>
-      {quads.map((q, idx) => {
-        if (cutZ !== null && q.z > cutZ + 0.001) return null;
-        return (
-          <mesh key={idx} position={[0, 0, q.z]}>
-            <planeGeometry args={[printer.printX, printer.printY]} />
-            <meshBasicMaterial
-              map={q.tex}
-              color="#bfdbfe"
-              transparent
-              opacity={0.85}
-              depthWrite={false}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-        );
-      })}
+      {quads.map((q, idx) => (
+        <mesh
+          key={idx}
+          ref={(el) => {
+            meshRefs.current[idx] = el;
+          }}
+          position={[0, 0, q.z]}
+        >
+          <planeGeometry args={[printer.printX, printer.printY]} />
+          <meshBasicMaterial
+            map={q.tex}
+            color="#bfdbfe"
+            transparent
+            opacity={0.85}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
     </group>
   );
 }
