@@ -108,8 +108,10 @@ const SLOT_OFFSETS: [number, number][] = [
   [105, 0],
 ];
 
-/** Měřítko pro slicovací rastr — vždy dělí rozlišení tiskárny beze zbytku. */
+/** Měřítko pro slicovací rastr — vždy dělí rozlišení tiskárny beze zbytku.
+ * 1/16 = 4× méně paměti než 1/8 (slice by jinak zabral stovky MB a mohl spadnout). */
 function sliceScale(resX: number, resY: number): number {
+  if (resX % 16 === 0 && resY % 16 === 0) return 16;
   if (resX % 8 === 0 && resY % 8 === 0) return 8;
   if (resX % 4 === 0 && resY % 4 === 0) return 4;
   if (resX % 2 === 0 && resY % 2 === 0) return 2;
@@ -995,9 +997,6 @@ export default function Home() {
           </SideSec>
 
           <div className="side-actions">
-            <button className="btn btn-small btn-green" onClick={doSlice} disabled={slicing || models.length === 0}>
-              {slicing ? "Slicuji…" : "Slicovat"}
-            </button>
             <button
               className={`btn btn-small ${showSettings ? "btn-primary" : "btn-ghost"}`}
               onClick={() => setShowSettings((s) => !s)}
@@ -1014,8 +1013,18 @@ export default function Home() {
         </div>
         {models.length > 0 && (
           <div className="fab-wrap" style={{ bottom: sliceResult ? 400 : 18 }}>
-            <button className="btn btn-fab" onClick={printNow} disabled={sending || exporting}>
-              {sending ? "Posílám…" : "Tisknout"}
+            <button
+              className="btn btn-fab"
+              onClick={sliceResult ? printNow : doSlice}
+              disabled={sending || exporting || (slicing && !sliceResult)}
+            >
+              {sending
+                ? "Posílám…"
+                : slicing && !sliceResult
+                ? "Slicuji…"
+                : sliceResult
+                ? "Tisknout"
+                : "Slicovat"}
             </button>
             <button
               className="btn btn-small btn-ghost fab-usb"
