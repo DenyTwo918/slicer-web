@@ -172,6 +172,7 @@ export default function Home() {
   });
 
   const [sliceResult, setSliceResult] = useState<SliceResult | null>(null);
+  const [supportMask, setSupportMask] = useState<Uint8Array[] | null>(null);
   const [sliceIdx, setSliceIdx] = useState(0);
   const [slicing, setSlicing] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -459,8 +460,8 @@ export default function Home() {
     showToast("ok", "STL stažen ✓");
   }, [selected]);
 
-  const computeSlice = useCallback((): SliceResult | null => {
-    if (models.length === 0) return null;
+  const computeSlice = useCallback((): { result: SliceResult | null; supportMask: Uint8Array[] | null } => {
+    if (models.length === 0) return { result: null, supportMask: null };
     const scale = sliceScale(printer.resX, printer.resY);
     const sliceW = printer.resX / scale;
     const sliceH = printer.resY / scale;
@@ -488,34 +489,51 @@ export default function Home() {
         mmPerPx
       );
     }
+    let supportMask: Uint8Array[] | null = null;
+    const px = Math.min(mmPerPx.x, mmPerPx.y);
     if (result && settings.supports) {
-      const px = Math.min(mmPerPx.x, mmPerPx.y);
-      result = generateSupports(result, {
+      const sr = generateSupports(result, {
         enabled: true,
         radiusPx: Math.max(2, Math.round(settings.supportRadiusMm / px)),
         tipPx: Math.max(1, Math.round(settings.supportTipMm / px)),
       });
+      result = sr.result;
+      supportMask = sr.mask;
     }
     if (result && settings.raft) {
-      result = applyRaft(
+      const rr = applyRaft(
         result,
         { enabled: true, layers: settings.raftLayers, marginMm: settings.raftMarginMm },
         mmPerPx
       );
+      result = rr.result;
+      if (supportMask) {
+        const n = Math.min(supportMask.length, rr.mask.length);
+        for (let i = 0; i < n; i++) {
+          const a = supportMask[i];
+          const b = rr.mask[i];
+          for (let p = 0; p < a.length; p++) {
+            if (b[p]) a[p] = 1;
+          }
+        }
+      } else {
+        supportMask = rr.mask;
+      }
     }
     if (result && settings.aa) {
       result = applyAA(result);
     }
-    return result;
+    return { result, supportMask };
   }, [models, settings, printer]);
 
   const doSlice = useCallback(() => {
     setSlicing(true);
     setTimeout(() => {
       try {
-        const result = computeSlice();
+        const { result, supportMask: sm } = computeSlice();
         if (result) {
           setSliceResult(result);
+          setSupportMask(sm);
           setSliceIdx(0);
           showToast(
             "ok",
@@ -588,11 +606,12 @@ export default function Home() {
       // 1) slicovat, pokud ještě není
       if (!sliceResult) {
         showToast("ok", "Slicuji…", 3000);
-        const result = computeSlice();
+        const { result, supportMask: sm } = computeSlice();
         if (!result) {
           showToast("err", "Slicování selhalo.", 8000);
           return;
         }
+        setSupportMask(sm);
         setSliceResult(result);
         setSliceIdx(0);
       }
@@ -724,6 +743,7 @@ export default function Home() {
             data: sliceResult.layers[sliceIdx].data,
             resX: sliceResult.resolutionX,
             resY: sliceResult.resolutionY,
+            layerHeight: sliceResult.layerHeight,
           }
         : null,
     [sliceResult, sliceIdx]
@@ -808,7 +828,7 @@ export default function Home() {
             printer={printer}
             layerPreview={layerPreview}
             gizmoMode={gizmoMode}
-            sliceResult={sliceResult}
+            supportMask={supportMask}
           />
         </div>
 

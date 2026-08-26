@@ -27,6 +27,7 @@ export interface LayerPreviewData {
   data: Uint8Array;
   resX: number;
   resY: number;
+  layerHeight: number;
 }
 
 /** Převede rastr vrstvy na canvas texturu (flipY opraví Y směr). */
@@ -137,69 +138,93 @@ function LayerPlane({
   );
 }
 
-/** Objem tisku — vrstvy jako 3D (raft, podpory i model).
- *  Vykreslí se JEDNOU; při posuvu slideru se jen přepíná visible (žádný re-render → plynulé). */
-function PrintVolume({
-  sliceResult,
+/** Podpory/raft jako 3D zelené sloupky (InstancedMesh = plynulé). */
+function SupportMesh({
+  mask,
+  resolutionX,
+  resolutionY,
+  layerHeight,
   printer,
   cutZ,
 }: {
-  sliceResult: { layers: { z: number; data: Uint8Array }[]; resolutionX: number; resolutionY: number } | null;
+  mask: Uint8Array[] | null;
+  resolutionX: number;
+  resolutionY: number;
+  layerHeight: number;
   printer: PrinterProfile;
   cutZ: number | null;
 }) {
-  const quads = useMemo(() => {
-    if (!sliceResult) return [];
-    const step = 3; // každá 3. vrstva
-    const arr: { z: number; tex: THREE.CanvasTexture }[] = [];
-    for (let i = 0; i < sliceResult.layers.length; i += step) {
-      const l = sliceResult.layers[i];
-      arr.push({
-        z: l.z,
-        tex: rasterToTexture(l.data, sliceResult.resolutionX, sliceResult.resolutionY, 2, true),
-      });
-    }
-    return arr;
-  }, [sliceResult]);
+  const W = resolutionX;
+  const sx = printer.printX / resolutionX;
+  const sy = printer.printY / resolutionY;
 
-  const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
+  // sloupky: pro každý (x,y) sloupec najdeme souvislé úseky masky
+  const boxes = useMemo(() => {
+    if (!mask || mask.length === 0) return [];
+    const H = resolutionY;
+    const N = mask.length;
+    const out: { x: number; y: number; zMin: number; zMax: number }[] = [];
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        let runStart = -1;
+        for (let i = 0; i <= N; i++) {
+          const on = i < N ? mask[i][y * W + x] !== 0 : false;
+          if (on && runStart < 0) runStart = i;
+          if (!on && runStart >= 0) {
+            out.push({
+              x: (x + 0.5) * sx - printer.printX / 2,
+              y: (y + 0.5) * sy - printer.printY / 2,
+              zMin: runStart * layerHeight,
+              zMax: i * layerHeight,
+            });
+            runStart = -1;
+          }
+        }
+      }
+    }
+    return out;
+  }, [mask, W, resolutionY, layerHeight, sx, sy, printer.printX, printer.printY]);
+
+  const meshRef = useRef<THREE.InstancedMesh>(null);
 
   useEffect(() => {
-    meshRefs.current.forEach((mesh, i) => {
-      if (mesh && quads[i]) {
-        mesh.visible = cutZ === null || quads[i].z <= cutZ + 0.001;
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const dummy = new THREE.Object3D();
+    const zCut = cutZ ?? Infinity;
+    boxes.forEach((b, i) => {
+      const zMaxC = Math.min(b.zMax, zCut);
+      if (zMaxC <= b.zMin) {
+        dummy.position.set(b.x, b.y, b.zMin);
+        dummy.scale.set(0, 0, 0);
+      } else {
+        dummy.position.set(b.x, b.y, (b.zMin + zMaxC) / 2);
+        dummy.scale.set(sx, sy, zMaxC - b.zMin);
       }
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
     });
-  }, [cutZ, quads]);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.count = boxes.length;
+    mesh.visible = boxes.length > 0;
+  }, [boxes, cutZ, sx, sy]);
 
+  const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []);
   useEffect(() => {
     return () => {
-      quads.forEach((q) => q.tex.dispose());
+      geometry.dispose();
     };
-  }, [quads]);
+  }, [geometry]);
 
+  if (boxes.length === 0) return null;
   return (
-    <group>
-      {quads.map((q, idx) => (
-        <mesh
-          key={idx}
-          ref={(el) => {
-            meshRefs.current[idx] = el;
-          }}
-          position={[0, 0, q.z]}
-        >
-          <planeGeometry args={[printer.printX, printer.printY]} />
-          <meshBasicMaterial
-            map={q.tex}
-            color="#bfdbfe"
-            transparent
-            opacity={0.85}
-            depthWrite={false}
-            side={THREE.DoubleSide}
-          />
-        </mesh>
-      ))}
-    </group>
+    <instancedMesh
+      ref={meshRef}
+      args={[geometry, undefined, boxes.length]}
+      frustumCulled={false}
+    >
+      <meshStandardMaterial color="#22c55e" transparent opacity={0.7} depthWrite={false} />
+    </instancedMesh>
   );
 }
 
@@ -339,7 +364,7 @@ export default function Viewport({
   printer,
   layerPreview,
   gizmoMode = "translate",
-  sliceResult,
+  supportMask,
 }: {
   models: ViewModel[];
   selectedId: number | null;
@@ -348,7 +373,7 @@ export default function Viewport({
   printer: PrinterProfile;
   layerPreview?: LayerPreviewData | null;
   gizmoMode?: "translate" | "rotate" | "scale";
-  sliceResult?: { layers: { z: number; data: Uint8Array }[]; resolutionX: number; resolutionY: number } | null;
+  supportMask?: Uint8Array[] | null;
 }) {
   const gizmoRef = useRef<THREE.Group>(null);
   const orbitRef = useRef<any>(null);
@@ -409,34 +434,37 @@ export default function Viewport({
       <Vat printer={printer} />
       <LayerPlane preview={layerPreview ?? null} printer={printer} />
 
-      {/* náhled tisku: objem vrstev pod řezem (raft + podpory + model) */}
-      {layerPreview ? (
-        <PrintVolume
-          sliceResult={sliceResult ?? null}
+      {/* podpory/raft jako zelené sloupky (zvlášť od modelu) */}
+      {supportMask && layerPreview && (
+        <SupportMesh
+          mask={supportMask}
+          resolutionX={layerPreview.resX}
+          resolutionY={layerPreview.resY}
+          layerHeight={layerPreview.layerHeight}
           printer={printer}
           cutZ={layerPreview.z}
         />
-      ) : (
-        models.map((m) => {
-          let color = "#5b9cf6";
-          if (m.id === selectedId) color = "#f5a524";
-          else if (!m.fits) color = "#ef4444";
-          const isSel = m.id === selectedId;
-          const h = m.mesh.bounds.max[2] - m.mesh.bounds.min[2];
-          return (
-            <group
-              key={m.id}
-              ref={isSel ? gizmoRef : undefined}
-              position={[m.transform.x, m.transform.y, h / 2]}
-            >
-              {/* pivot = střed modelu (rotace/škálování kolem něj) */}
-              <group position={[0, 0, -h / 2]}>
-                <Model mesh={m.mesh} color={color} clipPlane={null} />
-              </group>
-            </group>
-          );
-        })
       )}
+
+      {models.map((m) => {
+        let color = "#5b9cf6";
+        if (m.id === selectedId) color = "#f5a524";
+        else if (!m.fits) color = "#ef4444";
+        const isSel = m.id === selectedId;
+        const h = m.mesh.bounds.max[2] - m.mesh.bounds.min[2];
+        return (
+          <group
+            key={m.id}
+            ref={isSel ? gizmoRef : undefined}
+            position={[m.transform.x, m.transform.y, h / 2]}
+          >
+            {/* pivot = střed modelu (rotace/škálování kolem něj) */}
+            <group position={[0, 0, -h / 2]}>
+              <Model mesh={m.mesh} color={color} clipPlane={null} />
+            </group>
+          </group>
+        );
+      })}
 
       <ContactShadows
         position={[0, 0, 0.02]}

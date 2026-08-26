@@ -8,16 +8,25 @@ export interface RaftOptions {
   marginMm: number;
 }
 
+export interface RaftResult {
+  result: SliceResult;
+  /** maska raftu — 1 = pixel raftu (per vrstva) */
+  mask: Uint8Array[];
+}
+
 /**
  * Raft — plochá základna pod modelem pro lepší přilnavost k desce.
  * Vezme otisk spodní vrstvy, rozšíří o margin a vyplní první vrstvy.
+ * Vrací i masku přidaných pixelů.
  */
 export function applyRaft(
   slice: SliceResult,
   opts: RaftOptions,
   mmPerPx: { x: number; y: number }
-): SliceResult {
-  if (!opts.enabled || slice.layers.length === 0) return slice;
+): RaftResult {
+  if (!opts.enabled || slice.layers.length === 0) {
+    return { result: slice, mask: slice.layers.map(() => new Uint8Array(0)) };
+  }
   const W = slice.resolutionX;
   const H = slice.resolutionY;
   const px = Math.min(mmPerPx.x, mmPerPx.y);
@@ -57,15 +66,22 @@ export function applyRaft(
   }
 
   const layers = slice.layers.map((l) => new Uint8Array(l.data));
+  const mask = slice.layers.map(() => new Uint8Array(W * H));
   const raftCount = Math.min(opts.layers, layers.length);
   for (let i = 0; i < raftCount; i++) {
     for (let p = 0; p < W * H; p++) {
-      if (raft[p]) layers[i][p] = 1;
+      if (raft[p]) {
+        layers[i][p] = 1;
+        mask[i][p] = 1;
+      }
     }
   }
 
   return {
-    ...slice,
-    layers: layers.map((data, index) => ({ index, z: slice.layers[index].z, data })),
+    result: {
+      ...slice,
+      layers: layers.map((data, index) => ({ index, z: slice.layers[index].z, data })),
+    },
+    mask,
   };
 }

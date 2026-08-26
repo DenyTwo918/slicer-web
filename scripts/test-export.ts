@@ -1,4 +1,4 @@
-/**
+﻿/**
  * End-to-end test: batch (2 modely) + podpory + AA + export .pm7.
  * Spustit: npx tsx scripts/test-export.ts
  */
@@ -72,7 +72,7 @@ async function main() {
   console.log("Vrstev po sjednoceni:", slice.layers.length);
 
   const before = countPx(slice);
-  slice = generateSupports(slice, { enabled: true });
+  slice = generateSupports(slice, { enabled: true }).result;
   const after = countPx(slice);
   console.log(
     "Podpory: pridano",
@@ -145,3 +145,4 @@ main().catch((e) => {
   console.error("\nCHYBA:", e);
   process.exit(1);
 });
+

@@ -1,4 +1,4 @@
-import { makeBox } from "../lib/demo";
+﻿import { makeBox } from "../lib/demo";
 import { sliceMesh } from "../lib/slice";
 import { applyHollow } from "../lib/hollow";
 import { applyRaft } from "../lib/raft";
@@ -24,10 +24,11 @@ console.log("Po hollowingu:", after, "px (odstraneno:", before - after, ")");
 console.log(after < before * 0.7 ? "[OK] vnitrek odstranen" : "[POZOR] hollowing neodstranil dost");
 
 // raft
-const rafted = applyRaft(hollowed, { enabled: true, layers: 3, marginMm: 3 }, mmPerPx);
+const rafted = applyRaft(hollowed, { enabled: true, layers: 3, marginMm: 3 }, mmPerPx).result;
 const bottom0 = count(rafted.layers[0].data);
 const orig0 = count(slice.layers[0].data);
 console.log("\nRaft: vrstva 0 pred", orig0, "px, po raftu", bottom0, "px");
 console.log(bottom0 > orig0 ? "[OK] raft zvetsil zakladnu" : "[POZOR] raft nepribyl");
 
 console.log("\nHOTOVO");
+

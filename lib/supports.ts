@@ -97,16 +97,27 @@ function fillCircle(layer: Uint8Array, cx: number, cy: number, r: number, W: num
   }
 }
 
+export interface SupportResult {
+  result: SliceResult;
+  /** maska podpor — 1 = pixel přidaný podporami (per vrstva) */
+  mask: Uint8Array[];
+}
+
 /**
  * Automatické podpory: najde "přesahy" (pixely, které v předchozí vrstvě
  * nebyly pokryté) a ostrůvky a podepře je sloupem od desky nahoru.
- * Sloupy se zapíšou přímo do vrstev (binární rastr).
+ * Vrací i masku přidaných pixelů (pro 3D zobrazení podpor zvlášť).
  */
 export function generateSupports(
   slice: SliceResult,
   opts: SupportOptions
-): SliceResult {
-  if (!opts.enabled) return slice;
+): SupportResult {
+  if (!opts.enabled) {
+    return {
+      result: slice,
+      mask: slice.layers.map(() => new Uint8Array(0)),
+    };
+  }
   const W = slice.resolutionX;
   const H = slice.resolutionY;
   const overhangPx = opts.overhangPx ?? DEFAULTS.overhangPx;
@@ -115,6 +126,7 @@ export function generateSupports(
   const minSize = opts.minComponentPx ?? DEFAULTS.minComponentPx;
 
   const layers = slice.layers.map((l) => new Uint8Array(l.data));
+  const mask = slice.layers.map(() => new Uint8Array(W * H));
   const N = layers.length;
 
   const pillars: { x: number; y: number; top: number }[] = [];
@@ -138,13 +150,17 @@ export function generateSupports(
     for (let li = 0; li <= p.top; li++) {
       const r = li === p.top ? tip : radius;
       fillCircle(layers[li], p.x, p.y, r, W, H);
+      fillCircle(mask[li], p.x, p.y, r, W, H);
     }
   }
 
   return {
-    ...slice,
-    layers: layers.map(
-      (data, index) => ({ index, z: slice.layers[index].z, data })
-    ),
+    result: {
+      ...slice,
+      layers: layers.map(
+        (data, index) => ({ index, z: slice.layers[index].z, data })
+      ),
+    },
+    mask,
   };
 }
