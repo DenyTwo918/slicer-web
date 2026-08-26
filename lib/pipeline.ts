@@ -1,0 +1,139 @@
+import type { StlBounds } from "./stl";
+import { sliceMesh, unionSlices, type SliceResult } from "./slice";
+import { generateSupports } from "./supports";
+import { applyHollow } from "./hollow";
+import { applyRaft } from "./raft";
+import { applyAA } from "./aa";
+
+/** Model pro pipeline — jen data, která slicing potřebuje (posílá se do workera). */
+export interface PipelineModel {
+  positions: Float32Array;
+  bounds: StlBounds;
+  triangleCount: number;
+  /** pozice modelu na desce (mm) */
+  tx: number;
+  ty: number;
+}
+
+export interface PipelineSettings {
+  layerHeight: number;
+  hollow: boolean;
+  wallMm: number;
+  holeDiaMm: number;
+  drainHoles: boolean;
+  supports: boolean;
+  supportRadiusMm: number;
+  supportTipMm: number;
+  raft: boolean;
+  raftLayers: number;
+  raftMarginMm: number;
+  aa: boolean;
+}
+
+export interface PipelinePrinter {
+  resX: number;
+  resY: number;
+  printX: number;
+  printY: number;
+}
+
+export interface PipelineResult {
+  result: SliceResult | null;
+  supportMask: Uint8Array[] | null;
+}
+
+/** Měřítko pro slicovací rastr — vždy dělí rozlišení tiskárny beze zbytku.
+ *  1/16 = 16× méně pixelů než 1/1 (slice by jinak zabral ~550 MB a mohl spadnout). */
+export function sliceScale(resX: number, resY: number): number {
+  if (resX % 16 === 0 && resY % 16 === 0) return 16;
+  if (resX % 8 === 0 && resY % 8 === 0) return 8;
+  if (resX % 4 === 0 && resY % 4 === 0) return 4;
+  if (resX % 2 === 0 && resY % 2 === 0) return 2;
+  return 1;
+}
+
+/**
+ * Celá slicovací pipeline (slice → hollow → podpory → raft → AA).
+ * Čistá funkce — volá se z Web Workera (a jako fallback na hlavním vlákně).
+ * Vrstvy a maska se vrací jako pole Uint8Array (transferable pro postMessage).
+ */
+export function runSlicePipeline(
+  models: PipelineModel[],
+  settings: PipelineSettings,
+  printer: PipelinePrinter
+): PipelineResult {
+  if (models.length === 0) return { result: null, supportMask: null };
+  const scale = sliceScale(printer.resX, printer.resY);
+  const sliceW = printer.resX / scale;
+  const sliceH = printer.resY / scale;
+  const mmPerPx = {
+    x: printer.printX / sliceW,
+    y: printer.printY / sliceH,
+  };
+  let result: SliceResult | null = null;
+  for (const m of models) {
+    const mesh = {
+      positions: m.positions,
+      bounds: m.bounds,
+      triangleCount: m.triangleCount,
+      normals: new Float32Array(0),
+    };
+    const s = sliceMesh(mesh, {
+      layerHeight: settings.layerHeight,
+      resolutionX: sliceW,
+      resolutionY: sliceH,
+      plateW: printer.printX,
+      plateH: printer.printY,
+      offsetX: m.tx,
+      offsetY: m.ty,
+    });
+    result = result ? unionSlices(result, s) : s;
+  }
+  if (result && settings.hollow) {
+    result = applyHollow(
+      result,
+      {
+        enabled: true,
+        wallMm: settings.wallMm,
+        holeDiaMm: settings.holeDiaMm,
+        drainHoles: settings.drainHoles,
+      },
+      mmPerPx
+    );
+  }
+  let supportMask: Uint8Array[] | null = null;
+  const px = Math.min(mmPerPx.x, mmPerPx.y);
+  if (result && settings.supports) {
+    const sr = generateSupports(result, {
+      enabled: true,
+      radiusPx: Math.max(2, Math.round(settings.supportRadiusMm / px)),
+      tipPx: Math.max(1, Math.round(settings.supportTipMm / px)),
+    });
+    result = sr.result;
+    supportMask = sr.mask;
+  }
+  if (result && settings.raft) {
+    const rr = applyRaft(
+      result,
+      { enabled: true, layers: settings.raftLayers, marginMm: settings.raftMarginMm },
+      mmPerPx
+    );
+    result = rr.result;
+    if (supportMask) {
+      const n = Math.min(supportMask.length, rr.mask.length);
+      for (let i = 0; i < n; i++) {
+        const a = supportMask[i];
+        const b = rr.mask[i];
+        for (let p = 0; p < a.length; p++) {
+          if (b[p]) a[p] = 1;
+        }
+      }
+    } else {
+      supportMask = rr.mask;
+    }
+  }
+  if (result && settings.aa) {
+    result = applyAA(result);
+  }
+  return { result, supportMask };
+}

@@ -24,11 +24,10 @@ import {
   DEFAULT_TRANSFORM,
   type ModelTransform,
 } from "@/lib/transform";
-import { sliceMesh, unionSlices, type SliceResult } from "@/lib/slice";
-import { generateSupports } from "@/lib/supports";
-import { applyAA } from "@/lib/aa";
-import { applyHollow } from "@/lib/hollow";
-import { applyRaft } from "@/lib/raft";
+import type { SliceResult } from "@/lib/slice";
+import { runSlicePipeline, type PipelineSettings } from "@/lib/pipeline";
+import type { SliceWorkerResponse } from "@/lib/slice.worker";
+import type { PrinterProfile } from "@/lib/profiles";
 import { buildPm7 } from "@/lib/pm7";
 import { sendPrintToPrinter, getStoredJwt, setStoredJwt } from "@/lib/anycubic";
 import {
@@ -107,16 +106,6 @@ const SLOT_OFFSETS: [number, number][] = [
   [-105, 0],
   [105, 0],
 ];
-
-/** Měřítko pro slicovací rastr — vždy dělí rozlišení tiskárny beze zbytku.
- * 1/16 = 4× méně paměti než 1/8 (slice by jinak zabral stovky MB a mohl spadnout). */
-function sliceScale(resX: number, resY: number): number {
-  if (resX % 16 === 0 && resY % 16 === 0) return 16;
-  if (resX % 8 === 0 && resY % 8 === 0) return 8;
-  if (resX % 4 === 0 && resY % 4 === 0) return 4;
-  if (resX % 2 === 0 && resY % 2 === 0) return 2;
-  return 1;
-}
 
 let nextId = 1;
 
@@ -460,93 +449,105 @@ export default function Home() {
     showToast("ok", "STL stažen ✓");
   }, [selected]);
 
-  const computeSlice = useCallback((): { result: SliceResult | null; supportMask: Uint8Array[] | null } => {
-    if (models.length === 0) return { result: null, supportMask: null };
-    const scale = sliceScale(printer.resX, printer.resY);
-    const sliceW = printer.resX / scale;
-    const sliceH = printer.resY / scale;
-    const mmPerPx = {
-      x: printer.printX / sliceW,
-      y: printer.printY / sliceH,
-    };
-    let result: SliceResult | null = null;
-    for (const m of models) {
-      const s = sliceMesh(m.mesh, {
-        layerHeight: settings.layerHeight,
-        resolutionX: sliceW,
-        resolutionY: sliceH,
-        plateW: printer.printX,
-        plateH: printer.printY,
-        offsetX: m.transform.x,
-        offsetY: m.transform.y,
-      });
-      result = result ? unionSlices(result, s) : s;
-    }
-    if (result && settings.hollow) {
-      result = applyHollow(
-        result,
-        { enabled: true, wallMm: settings.wallMm, holeDiaMm: settings.holeDiaMm, drainHoles: settings.drainHoles },
-        mmPerPx
-      );
-    }
-    let supportMask: Uint8Array[] | null = null;
-    const px = Math.min(mmPerPx.x, mmPerPx.y);
-    if (result && settings.supports) {
-      const sr = generateSupports(result, {
-        enabled: true,
-        radiusPx: Math.max(2, Math.round(settings.supportRadiusMm / px)),
-        tipPx: Math.max(1, Math.round(settings.supportTipMm / px)),
-      });
-      result = sr.result;
-      supportMask = sr.mask;
-    }
-    if (result && settings.raft) {
-      const rr = applyRaft(
-        result,
-        { enabled: true, layers: settings.raftLayers, marginMm: settings.raftMarginMm },
-        mmPerPx
-      );
-      result = rr.result;
-      if (supportMask) {
-        const n = Math.min(supportMask.length, rr.mask.length);
-        for (let i = 0; i < n; i++) {
-          const a = supportMask[i];
-          const b = rr.mask[i];
-          for (let p = 0; p < a.length; p++) {
-            if (b[p]) a[p] = 1;
-          }
-        }
-      } else {
-        supportMask = rr.mask;
-      }
-    }
-    if (result && settings.aa) {
-      result = applyAA(result);
-    }
-    return { result, supportMask };
-  }, [models, settings, printer]);
+/** Slicovací worker — singleton. Běží mimo hlavní vlákno → UI nezamrzne. */
+let sliceWorker: Worker | null = null;
+let sliceSeq = 0;
 
-  const doSlice = useCallback(() => {
-    setSlicing(true);
-    setTimeout(() => {
+function getSliceWorker(): Worker {
+  if (!sliceWorker) {
+    sliceWorker = new Worker(new URL("../lib/slice.worker.ts", import.meta.url));
+  }
+  return sliceWorker;
+}
+
+/**
+ * Spustí slicování ve workeru. Vrstvy se přenesou přes transfer (bez kopie).
+ * Pokud worker selže (CSP apod.), spadne na synchronní CPU pipeline (fallback).
+ */
+function sliceInWorker(
+  models: ModelItem[],
+  settings: SliceSettings,
+  printer: PrinterProfile
+): Promise<{ result: SliceResult | null; supportMask: Uint8Array[] | null }> {
+  const payload = {
+    id: ++sliceSeq,
+    models: models.map((m) => ({
+      positions: m.mesh.positions,
+      bounds: m.mesh.bounds,
+      triangleCount: m.mesh.triangleCount,
+      tx: m.transform.x,
+      ty: m.transform.y,
+    })),
+    settings: {
+      layerHeight: settings.layerHeight,
+      hollow: settings.hollow,
+      wallMm: settings.wallMm,
+      holeDiaMm: settings.holeDiaMm,
+      drainHoles: settings.drainHoles,
+      supports: settings.supports,
+      supportRadiusMm: settings.supportRadiusMm,
+      supportTipMm: settings.supportTipMm,
+      raft: settings.raft,
+      raftLayers: settings.raftLayers,
+      raftMarginMm: settings.raftMarginMm,
+      aa: settings.aa,
+    } satisfies PipelineSettings,
+    printer: {
+      resX: printer.resX,
+      resY: printer.resY,
+      printX: printer.printX,
+      printY: printer.printY,
+    },
+  };
+
+  return new Promise((resolve, reject) => {
+    let worker: Worker;
+    try {
+      worker = getSliceWorker();
+    } catch {
+      // worker není dostupný → synchronní fallback na hlavním vlákně
       try {
-        const { result, supportMask: sm } = computeSlice();
-        if (result) {
-          setSliceResult(result);
-          setSupportMask(sm);
-          setSliceIdx(0);
-          showToast(
-            "ok",
-            `Naslicováno ✓ · ${result.layers.length} vrstev · ${result.layerHeight} mm${settings.supports ? " · podpory" : ""}${settings.aa ? " · AA" : ""}`
-          );
-        }
+        resolve(runSlicePipeline(payload.models, payload.settings, payload.printer));
       } catch (e) {
-        showToast("err", e instanceof Error ? e.message : "Slicování selhalo.", 8000);
-      } finally {
-        setSlicing(false);
+        reject(e);
       }
-    }, 30);
-  }, [computeSlice, settings]);
+      return;
+    }
+    const handler = (ev: MessageEvent<SliceWorkerResponse>) => {
+      const msg = ev.data;
+      if (msg.id !== payload.id) return;
+      worker.removeEventListener("message", handler);
+      if (msg.ok && msg.result) {
+        resolve({ result: msg.result, supportMask: msg.supportMask ?? null });
+      } else {
+        reject(new Error(msg.error ?? "Slicování selhalo."));
+      }
+    };
+    worker.addEventListener("message", handler);
+    worker.postMessage(payload);
+  });
+}
+
+const doSlice = useCallback(async () => {
+  if (models.length === 0) return;
+  setSlicing(true);
+  try {
+    const { result, supportMask: sm } = await sliceInWorker(models, settings, printer);
+    if (result) {
+      setSliceResult(result);
+      setSupportMask(sm);
+      setSliceIdx(0);
+      showToast(
+        "ok",
+        `Naslicováno ✓ · ${result.layers.length} vrstev · ${result.layerHeight} mm${settings.supports ? " · podpory" : ""}${settings.aa ? " · AA" : ""}`
+      );
+    }
+  } catch (e) {
+    showToast("err", e instanceof Error ? e.message : "Slicování selhalo.", 8000);
+  } finally {
+    setSlicing(false);
+  }
+}, [models, settings, printer]);
 
   const estPrintTime = useMemo(() => {
     if (!sliceResult) return 0;
@@ -606,7 +607,7 @@ export default function Home() {
       // 1) slicovat, pokud ještě není
       if (!sliceResult) {
         showToast("ok", "Slicuji…", 3000);
-        const { result, supportMask: sm } = computeSlice();
+        const { result, supportMask: sm } = await sliceInWorker(models, settings, printer);
         if (!result) {
           showToast("err", "Slicování selhalo.", 8000);
           return;
@@ -644,7 +645,7 @@ export default function Home() {
     } finally {
       setSending(false);
     }
-  }, [models, sliceResult, computeSlice, buildExport]);
+  }, [models, sliceResult, buildExport]);
 
   const centerSel = useCallback(() => {
     if (!selectedId) return;
