@@ -380,6 +380,15 @@ export default function Viewport({
   const [orbitEnabled, setOrbitEnabled] = useState(true);
   const rad2deg = (r: number) => (r * 180) / Math.PI;
 
+  // model se krájí na aktuální vrstvě (spodní část plná, horní ghost)
+  const clipPlane = useMemo(
+    () =>
+      layerPreview
+        ? new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerPreview.z)
+        : null,
+    [layerPreview]
+  );
+
   const commitGizmo = () => {
     const g = gizmoRef.current;
     if (!g) return;
@@ -460,7 +469,7 @@ export default function Viewport({
           >
             {/* pivot = střed modelu (rotace/škálování kolem něj) */}
             <group position={[0, 0, -h / 2]}>
-              <Model mesh={m.mesh} color={color} clipPlane={null} />
+              <Model mesh={m.mesh} color={color} clipPlane={clipPlane} />
             </group>
           </group>
         );

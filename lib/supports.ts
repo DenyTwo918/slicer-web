@@ -37,7 +37,8 @@ function dilate(src: Uint8Array, W: number, H: number, r: number): Uint8Array {
   return out;
 }
 
-/** Flood-fill komponenty (8-okolí); vrací centroidy komponent ≥ minSize. */
+/** Flood-fill komponenty (8-okolí); vrací kotvu = první pixel komponenty
+ *  (přímo NA přesahu — ne těžiště, které může být v díře). */
 function components(
   mask: Uint8Array,
   W: number,
@@ -49,18 +50,16 @@ function components(
   for (let p = 0; p < W * H; p++) {
     if (!mask[p]) continue;
     // flood
+    const seedX = p % W;
+    const seedY = (p / W) | 0;
     stack.length = 0;
     stack.push(p);
     mask[p] = 0;
-    let sumX = 0;
-    let sumY = 0;
     let n = 0;
     while (stack.length) {
       const idx = stack.pop()!;
       const x = idx % W;
       const y = (idx / W) | 0;
-      sumX += x;
-      sumY += y;
       n++;
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
@@ -76,7 +75,7 @@ function components(
       }
     }
     if (n >= minSize) {
-      res.push({ x: sumX / n, y: sumY / n, size: n });
+      res.push({ x: seedX, y: seedY, size: n });
     }
   }
   return res;
