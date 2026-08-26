@@ -302,20 +302,18 @@ function Model({
   );
 }
 
-/** Kovová tisková deska — jemný nekonečný grid jako v 3D programech. */
+/** Tisková deska — jemný grid ohraničený na plochu tisku (ostré linky, žádné fade přes vanu). */
 function BuildPlate({ printer }: { printer: PrinterProfile }) {
   return (
     <Grid
-      position={[0, 0, 0]}
-      infiniteGrid
+      position={[0, 0, 0.01]}
+      args={[printer.printX, printer.printY]}
       cellSize={10}
-      cellThickness={0.5}
+      cellThickness={0.4}
       cellColor="#2b3442"
       sectionSize={50}
-      sectionThickness={1}
+      sectionThickness={0.9}
       sectionColor="#3b4657"
-      fadeDistance={700}
-      fadeStrength={1.5}
     />
   );
 }
