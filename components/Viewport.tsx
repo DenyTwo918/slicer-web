@@ -68,7 +68,7 @@ function LayerPlane({
 
   if (!preview) return null;
   return (
-    <mesh position={[0, 0, preview.z]}>
+    <mesh position={[0, 0, preview.z + 0.02]}>
       <planeGeometry args={[printer.printX, printer.printY]} />
       <meshBasicMaterial
         map={texture ?? undefined}
@@ -82,7 +82,15 @@ function LayerPlane({
   );
 }
 
-function Model({ mesh, color }: { mesh: StlMesh; color: string }) {
+function Model({
+  mesh,
+  color,
+  clipPlane,
+}: {
+  mesh: StlMesh;
+  color: string;
+  clipPlane?: THREE.Plane | null;
+}) {
   const geometry = useMemo(() => {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
@@ -94,6 +102,10 @@ function Model({ mesh, color }: { mesh: StlMesh; color: string }) {
     g.computeBoundingSphere();
     return g;
   }, [mesh]);
+  const planes = useMemo(
+    () => (clipPlane ? [clipPlane] : undefined),
+    [clipPlane]
+  );
   return (
     <mesh geometry={geometry} castShadow receiveShadow>
       <meshStandardMaterial
@@ -102,6 +114,7 @@ function Model({ mesh, color }: { mesh: StlMesh; color: string }) {
         roughness={0.32}
         envMapIntensity={0.9}
         side={THREE.DoubleSide}
+        clippingPlanes={planes}
       />
     </mesh>
   );
@@ -186,6 +199,14 @@ export default function Viewport({
   const orbitRef = useRef<any>(null);
   const [orbitEnabled, setOrbitEnabled] = useState(true);
   const rad2deg = (r: number) => (r * 180) / Math.PI;
+  // řezová rovina — model se krájí na aktuální vrstvě
+  const clipPlane = useMemo(
+    () =>
+      layerPreview
+        ? new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerPreview.z)
+        : null,
+    [layerPreview]
+  );
 
   const commitGizmo = () => {
     const g = activeRef.current;
@@ -215,6 +236,9 @@ export default function Viewport({
       dpr={[1, 2]}
       gl={{ antialias: true, preserveDrawingBuffer: true }}
       camera={{ position: [200, 160, 260], up: [0, 0, 1], fov: 45, near: 1, far: 4000 }}
+      onCreated={(state) => {
+        state.gl.localClippingEnabled = true;
+      }}
     >
       <color attach="background" args={["#0b0e13"]} />
       <fog attach="fog" args={["#0b0e13", 900, 2600]} />
@@ -254,7 +278,7 @@ export default function Viewport({
               position={[0, 0, h / 2]}
             >
               <group position={[0, 0, -h / 2]}>
-                <Model mesh={m.mesh} color={color} />
+                <Model mesh={m.mesh} color={color} clipPlane={clipPlane} />
               </group>
             </group>
           </group>
