@@ -102,21 +102,54 @@ function Model({
     g.computeBoundingSphere();
     return g;
   }, [mesh]);
-  const planes = useMemo(
-    () => (clipPlane ? [clipPlane] : undefined),
-    [clipPlane]
+
+  if (!clipPlane) {
+    return (
+      <mesh geometry={geometry} castShadow receiveShadow>
+        <meshStandardMaterial
+          color={color}
+          metalness={0.2}
+          roughness={0.32}
+          envMapIntensity={0.9}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    );
+  }
+
+  // řez: spodní část plná, horní část = ghost (průsvitný)
+  const layerZ = -clipPlane.constant;
+  const below = useMemo(
+    () => new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerZ),
+    [layerZ]
+  );
+  const above = useMemo(
+    () => new THREE.Plane(new THREE.Vector3(0, 0, -1), layerZ),
+    [layerZ]
   );
   return (
-    <mesh geometry={geometry} castShadow receiveShadow>
-      <meshStandardMaterial
-        color={color}
-        metalness={0.2}
-        roughness={0.32}
-        envMapIntensity={0.9}
-        side={THREE.DoubleSide}
-        clippingPlanes={planes}
-      />
-    </mesh>
+    <>
+      <mesh geometry={geometry} castShadow receiveShadow>
+        <meshStandardMaterial
+          color={color}
+          metalness={0.2}
+          roughness={0.32}
+          envMapIntensity={0.9}
+          side={THREE.DoubleSide}
+          clippingPlanes={[below]}
+        />
+      </mesh>
+      <mesh geometry={geometry}>
+        <meshStandardMaterial
+          color="#9fb4d8"
+          transparent
+          opacity={0.22}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+          clippingPlanes={[above]}
+        />
+      </mesh>
+    </>
   );
 }
 
@@ -192,10 +225,7 @@ export default function Viewport({
   layerPreview?: LayerPreviewData | null;
   gizmoMode?: "translate" | "rotate" | "scale";
 }) {
-  const activeRef = useRef<THREE.Group | null>(null);
-  const setActive = useCallback((node: THREE.Group | null) => {
-    activeRef.current = node;
-  }, []);
+  const gizmoRef = useRef<THREE.Group>(null);
   const orbitRef = useRef<any>(null);
   const [orbitEnabled, setOrbitEnabled] = useState(true);
   const rad2deg = (r: number) => (r * 180) / Math.PI;
@@ -209,7 +239,7 @@ export default function Viewport({
   );
 
   const commitGizmo = () => {
-    const g = activeRef.current;
+    const g = gizmoRef.current;
     if (!g) return;
     if (gizmoMode === "translate") {
       onMove(selectedId!, g.position.x, g.position.y);
@@ -226,6 +256,8 @@ export default function Viewport({
       // po zapsání do dat modelu resetovat gyro
       g.rotation.set(0, 0, 0);
       g.scale.set(1, 1, 1);
+      const pivotZ = g.userData.pivotZ ?? 0;
+      g.position.z = pivotZ;
     }
     setOrbitEnabled(true);
   };
@@ -269,17 +301,12 @@ export default function Viewport({
         return (
           <group
             key={m.id}
-            ref={isSel && gizmoMode === "translate" ? setActive : undefined}
-            position={[m.transform.x, m.transform.y, 0]}
+            ref={isSel ? gizmoRef : undefined}
+            position={[m.transform.x, m.transform.y, h / 2]}
           >
-            {/* pivot ve středu modelu — rotace/škálování kolem něj */}
-            <group
-              ref={isSel && gizmoMode !== "translate" ? setActive : undefined}
-              position={[0, 0, h / 2]}
-            >
-              <group position={[0, 0, -h / 2]}>
-                <Model mesh={m.mesh} color={color} clipPlane={clipPlane} />
-              </group>
+            {/* pivot = střed modelu (rotace/škálování kolem něj) */}
+            <group position={[0, 0, -h / 2]}>
+              <Model mesh={m.mesh} color={color} clipPlane={clipPlane} />
             </group>
           </group>
         );
@@ -296,16 +323,23 @@ export default function Viewport({
 
       {selectedId !== null && (
         <TransformControls
-          object={activeRef as any}
+          object={gizmoRef as any}
           mode={gizmoMode}
           size={0.9}
           onObjectChange={() => {
-            if (gizmoMode === "translate" && activeRef.current) {
-              const p = activeRef.current.position;
-              onMove(selectedId, p.x, p.y);
+            if (gizmoMode === "translate" && gizmoRef.current) {
+              const g = gizmoRef.current;
+              onMove(selectedId, g.position.x, g.position.y);
+              // Z zamčený — pivot zůstává ve středu modelu
+              g.position.z = g.userData.pivotZ ?? 0;
             }
           }}
-          onMouseDown={() => setOrbitEnabled(false)}
+          onMouseDown={() => {
+            setOrbitEnabled(false);
+            if (gizmoRef.current) {
+              gizmoRef.current.userData.pivotZ = gizmoRef.current.position.z;
+            }
+          }}
           onMouseUp={commitGizmo}
         />
       )}
