@@ -802,6 +802,7 @@ export default function Home() {
             printer={printer}
             layerPreview={layerPreview}
             gizmoMode={gizmoMode}
+            sliceResult={sliceResult}
           />
         </div>
 
@@ -1386,6 +1387,19 @@ export default function Home() {
 
         {sliceResult && (
           <div className="layer-bar">
+            <div className="layer-bar-head">
+              <span>Náhled tisku</span>
+              <button
+                className="slice-close"
+                onClick={() => {
+                  setSliceResult(null);
+                  setLastExport(null);
+                }}
+                title="Zavřít náhled"
+              >
+                ×
+              </button>
+            </div>
             <input
               type="range"
               min={0}

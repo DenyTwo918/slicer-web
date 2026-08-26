@@ -29,6 +29,40 @@ export interface LayerPreviewData {
   resY: number;
 }
 
+/** Převede rastr vrstvy na canvas texturu (flipY opraví Y směr). */
+function rasterToTexture(
+  data: Uint8Array,
+  resX: number,
+  resY: number,
+  scale: number,
+  flipY: boolean
+): THREE.CanvasTexture {
+  const w = Math.max(1, Math.floor(resX / scale));
+  const h = Math.max(1, Math.floor(resY / scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no 2d ctx");
+  const img = ctx.createImageData(w, h);
+  for (let y = 0; y < h; y++) {
+    const sy = flipY ? resY - 1 - Math.floor(y * scale) : Math.floor(y * scale);
+    for (let x = 0; x < w; x++) {
+      const sx = Math.floor(x * scale);
+      const v = data[sy * resX + sx];
+      const o = (y * w + x) * 4;
+      img.data[o] = 255;
+      img.data[o + 1] = 255;
+      img.data[o + 2] = 255;
+      img.data[o + 3] = v;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
 /** Řezová rovina tisku — ukazuje aktuální vrstvu ve 3D (jako slicery). */
 function LayerPlane({
   preview,
@@ -43,23 +77,7 @@ function LayerPlane({
       setTexture(null);
       return;
     }
-    const canvas = document.createElement("canvas");
-    canvas.width = preview.resX;
-    canvas.height = preview.resY;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const img = ctx.createImageData(preview.resX, preview.resY);
-    for (let i = 0; i < preview.data.length; i++) {
-      const v = preview.data[i];
-      const o = i * 4;
-      img.data[o] = 255;
-      img.data[o + 1] = 255;
-      img.data[o + 2] = 255;
-      img.data[o + 3] = v; // alpha = hodnota vrstvy (AA šedá)
-    }
-    ctx.putImageData(img, 0, 0);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.needsUpdate = true;
+    const tex = rasterToTexture(preview.data, preview.resX, preview.resY, 1, true);
     setTexture(tex);
     return () => {
       tex.dispose();
@@ -79,6 +97,64 @@ function LayerPlane({
         side={THREE.DoubleSide}
       />
     </mesh>
+  );
+}
+
+/** Objem tisku — vrstvy jako 3D (raft, podpory i model). */
+function PrintVolume({
+  sliceResult,
+  printer,
+  clipPlane,
+}: {
+  sliceResult: { layers: { z: number; data: Uint8Array }[]; resolutionX: number; resolutionY: number } | null;
+  printer: PrinterProfile;
+  clipPlane: THREE.Plane | null;
+}) {
+  const quads = useMemo(() => {
+    if (!sliceResult) return [];
+    const step = 3; // každá 3. vrstva (tenčí objem, méně textur)
+    const arr: { z: number; tex: THREE.CanvasTexture }[] = [];
+    for (let i = 0; i < sliceResult.layers.length; i += step) {
+      const l = sliceResult.layers[i];
+      arr.push({
+        z: l.z,
+        tex: rasterToTexture(l.data, sliceResult.resolutionX, sliceResult.resolutionY, 2, true),
+      });
+    }
+    return arr;
+  }, [sliceResult]);
+
+  useEffect(() => {
+    return () => {
+      quads.forEach((q) => q.tex.dispose());
+    };
+  }, [quads]);
+
+  const below = useMemo(
+    () =>
+      clipPlane
+        ? new THREE.Plane(new THREE.Vector3(0, 0, 1), clipPlane.constant)
+        : null,
+    [clipPlane]
+  );
+
+  return (
+    <group>
+      {quads.map((q, idx) => (
+        <mesh key={idx} position={[0, 0, q.z]}>
+          <planeGeometry args={[printer.printX, printer.printY]} />
+          <meshBasicMaterial
+            map={q.tex}
+            color="#bfdbfe"
+            transparent
+            opacity={0.85}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+            clippingPlanes={below ? [below] : undefined}
+          />
+        </mesh>
+      ))}
+    </group>
   );
 }
 
@@ -218,6 +294,7 @@ export default function Viewport({
   printer,
   layerPreview,
   gizmoMode = "translate",
+  sliceResult,
 }: {
   models: ViewModel[];
   selectedId: number | null;
@@ -226,6 +303,7 @@ export default function Viewport({
   printer: PrinterProfile;
   layerPreview?: LayerPreviewData | null;
   gizmoMode?: "translate" | "rotate" | "scale";
+  sliceResult?: { layers: { z: number; data: Uint8Array }[]; resolutionX: number; resolutionY: number } | null;
 }) {
   const gizmoRef = useRef<THREE.Group>(null);
   const orbitRef = useRef<any>(null);
@@ -294,25 +372,30 @@ export default function Viewport({
       <Vat printer={printer} />
       <LayerPlane preview={layerPreview ?? null} printer={printer} />
 
-      {models.map((m) => {
-        let color = "#5b9cf6";
-        if (m.id === selectedId) color = "#f5a524";
-        else if (!m.fits) color = "#ef4444";
-        const isSel = m.id === selectedId;
-        const h = m.mesh.bounds.max[2] - m.mesh.bounds.min[2];
-        return (
-          <group
-            key={m.id}
-            ref={isSel ? gizmoRef : undefined}
-            position={[m.transform.x, m.transform.y, h / 2]}
-          >
-            {/* pivot = střed modelu (rotace/škálování kolem něj) */}
-            <group position={[0, 0, -h / 2]}>
-              <Model mesh={m.mesh} color={color} clipPlane={clipPlane} />
+      {/* náhled tisku: objem vrstev (raft + podpory + model) místo modelů */}
+      {layerPreview ? (
+        <PrintVolume sliceResult={sliceResult ?? null} printer={printer} clipPlane={clipPlane} />
+      ) : (
+        models.map((m) => {
+          let color = "#5b9cf6";
+          if (m.id === selectedId) color = "#f5a524";
+          else if (!m.fits) color = "#ef4444";
+          const isSel = m.id === selectedId;
+          const h = m.mesh.bounds.max[2] - m.mesh.bounds.min[2];
+          return (
+            <group
+              key={m.id}
+              ref={isSel ? gizmoRef : undefined}
+              position={[m.transform.x, m.transform.y, h / 2]}
+            >
+              {/* pivot = střed modelu (rotace/škálování kolem něj) */}
+              <group position={[0, 0, -h / 2]}>
+                <Model mesh={m.mesh} color={color} clipPlane={null} />
+              </group>
             </group>
-          </group>
-        );
-      })}
+          );
+        })
+      )}
 
       <ContactShadows
         position={[0, 0, 0.02]}
@@ -323,7 +406,7 @@ export default function Viewport({
         resolution={512}
       />
 
-      {selectedId !== null && (
+      {selectedId !== null && !layerPreview && (
         <TransformControls
           object={gizmoRef as any}
           mode={gizmoMode}
