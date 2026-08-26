@@ -33,23 +33,22 @@ export function applyRaft(
   const px = Math.min(mmPerPx.x, mmPerPx.y);
   const marginPx = Math.max(1, Math.round(opts.marginMm / px));
 
-  // otisk = spodní vrstva (první s pixely)
-  let bottomIdx = 0;
-  for (let i = 0; i < slice.layers.length; i++) {
+  // otisk = sjednocení spodních vrstev (do max 2 mm, nebo 8 % výšky).
+  // U nakloněných modelů se deska dotýká jen částí — první vrstva by dala
+  // mini-raft; sjednocený pás pod modelem dá raft kolem celé spodní strany.
+  const totalH = slice.layers.length * slice.layerHeight;
+  const bandMm = Math.max(2, totalH * 0.08);
+  const bandCount = Math.min(
+    slice.layers.length,
+    Math.ceil(bandMm / slice.layerHeight)
+  );
+  const footprint = new Uint8Array(W * H);
+  for (let i = 0; i < bandCount; i++) {
     const l = slice.layers[i].data;
-    let has = false;
     for (let p = 0; p < l.length; p++) {
-      if (l[p]) {
-        has = true;
-        break;
-      }
-    }
-    if (has) {
-      bottomIdx = i;
-      break;
+      if (l[p]) footprint[p] = 1;
     }
   }
-  const footprint = slice.layers[bottomIdx].data;
 
   // rozšířit (box dilate o marginPx) — WASM SIMD, jinak JS
   const raft = nativeReady()

@@ -75,9 +75,12 @@ function circleBlocked(
 }
 
 /**
- * Umístění sloupů (Chitubox „Spacing From Model"): kotva dostane sloup jen,
- * pokud má od desky ke špičce volnou svislou cestu. Jinak se kotva přeskočí.
- * Špička = tipPx, sloup se mírně rozšiřuje k dolů (radiusPx → radiusBottomPx).
+ * Umístění sloupů (Chitubox model):
+ *  1) přímá svislá cesta volná → klasický svislý sloup
+ *     (špička smí dotýkat modelu — k tomu je tu; kontroluje se jen tělo sloupu)
+ *  2) blokovaná → hledá volný sloup v okolí („Max Contact Point Offset")
+ *     a napojí ho na kotvu ŠIKMÝM SPOJEM (top segment)
+ *  3) nic volného v okolí → kotva přeskočena
  */
 export function placeSupports(
   anchors: { x: number; y: number; layer: number }[],
@@ -88,7 +91,24 @@ export function placeSupports(
   H: number,
   radiusBottomPx?: number
 ): PlacedPillar[] {
-  const rBot = Math.max(radiusPx, Math.round((radiusBottomPx ?? radiusPx * 1.4)));
+  const rBot = Math.max(radiusPx, Math.round(radiusBottomPx ?? radiusPx * 1.4));
+  const pxPerMm = 223.642 / W;
+  const maxOff = Math.max(4, Math.round(4 / pxPerMm)); // posun kotvy ~4 mm
+
+  // je tělo sloupu na (x,y) volné od desky až po vrstvu `from` (vyjma)?
+  const bodyFree = (from: number, x: number, y: number): boolean => {
+    for (let li = Math.min(from, ctx.N - 1); li >= 0; li--) {
+      if (circleBlocked(ctx, li, x, y, radiusPx, W, H)) return false;
+    }
+    return true;
+  };
+  // nejvyšší vrstva, od které je sloup na (x,y) volný až k desce
+  const highestFree = (from: number, x: number, y: number): number => {
+    let li = Math.min(from - 1, ctx.N - 1);
+    while (li >= 0 && !circleBlocked(ctx, li, x, y, radiusPx, W, H)) li--;
+    return li + 1;
+  };
+
   const sorted = [...anchors].sort((a, b) => b.layer - a.layer);
   const placed: PlacedPillar[] = [];
 
@@ -96,29 +116,70 @@ export function placeSupports(
     if (a.x < 0 || a.y < 0 || a.x >= W || a.y >= H) continue;
     const top = Math.min(Math.max(0, a.layer), ctx.N - 1);
 
-    // kolizní kontrola celé svislé cesty (deska → špička)
-    let clear = true;
-    for (let li = 0; li <= top; li++) {
-      const r = li === top ? tipPx : radiusPx;
-      if (circleBlocked(ctx, li, a.x, a.y, r, W, H)) {
-        clear = false;
-        break;
+    // špička u kotvy — vždy (dotyk s modelem je účel)
+    const drawTipAndPillar = (px: number, py: number, pillarTop: number) => {
+      ctx.fill(top, a.x, a.y, tipPx);
+      // šikmý spoj ze špičky ke sloupu (pokud jsou rozdílné pozice)
+      if (pillarTop >= 0 && (px !== a.x || py !== a.y)) {
+        const steps = Math.max(
+          top - pillarTop,
+          Math.round(Math.hypot(px - a.x, py - a.y)),
+          1
+        );
+        for (let s = 0; s <= steps; s++) {
+          const f = s / steps;
+          const li = Math.round(top - (top - pillarTop) * f);
+          const cx = Math.round(a.x + (px - a.x) * f);
+          const cy = Math.round(a.y + (py - a.y) * f);
+          if (li >= 0 && li < ctx.N && li <= top) ctx.fill(li, cx, cy, radiusPx);
+        }
+      }
+      // sloup dolů (rozšiřující se k desce)
+      for (let li = pillarTop - 1; li >= 0; li--) {
+        const span = Math.max(1, pillarTop);
+        const f2 = 1 - li / span;
+        const r = Math.round(radiusPx + (rBot - radiusPx) * f2);
+        ctx.fill(li, px, py, r);
+      }
+    };
+
+    // 1) přímá cesta: tělo sloupu (pod špičkou) musí být celé volné
+    if (bodyFree(top, a.x, a.y)) {
+      placed.push({ x: a.x, y: a.y, top });
+      drawTipAndPillar(a.x, a.y, top);
+      continue;
+    }
+
+    // 2) posun do stran: najdi volné místo pro sloup („Max Contact Point Offset")
+    let found: { x: number; y: number; clearTop: number } | null = null;
+    for (let ring = 2; ring <= maxOff && !found; ring += 2) {
+      const step = Math.max(2, ring >> 2);
+      for (let dy = -ring; dy <= ring && !found; dy += step) {
+        for (let dx = -ring; dx <= ring && !found; dx += step) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+          const nx = a.x + dx;
+          const ny = a.y + dy;
+          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+          const clearTop = highestFree(top, nx, ny);
+          // sloup musí sahat aspoň do 40 % výšky kotve (jinak most moc dlouhý)
+          if (clearTop >= Math.floor(top * 0.4)) found = { x: nx, y: ny, clearTop };
+        }
       }
     }
-    if (!clear) continue; // kotva přeskočena — cesta blokovaná modelem
+    if (!found) continue; // nikde volno — kotva přeskočena
 
-    placed.push({ x: a.x, y: a.y, top });
-
-    // špička
-    ctx.fill(top, a.x, a.y, tipPx);
-    // sloup s mírným rozšířením k dolů
-    for (let li = top - 1; li >= 0; li--) {
-      const f = top > 0 ? 1 - li / top : 0;
-      const r = Math.round(radiusPx + (rBot - radiusPx) * f);
-      ctx.fill(li, a.x, a.y, r);
-    }
+    placed.push({ x: found.x, y: found.y, top: found.clearTop });
+    drawTipAndPillar(found.x, found.y, found.clearTop);
   }
   return placed;
+}
+
+// helpery pro čitelnost výše
+function ax0(x: number): number {
+  return x;
+}
+function ay0(y: number): number {
+  return y;
 }
 
 /**
