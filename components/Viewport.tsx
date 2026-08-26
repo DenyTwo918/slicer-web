@@ -260,6 +260,12 @@ function Model({
     () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerZ) : null),
     [clipPlane, layerZ]
   );
+  // horní část řezu = solid ghost (tmavší odstín) — hook MUSÍ být před podmíněným returnem
+  const ghostColor = useMemo(() => {
+    const c = new THREE.Color(color);
+    c.multiplyScalar(0.62);
+    return "#" + c.getHexString();
+  }, [color]);
 
   if (!clipPlane) {
     return (
@@ -277,11 +283,6 @@ function Model({
 
   // řez: spodní část plná, horní část = solid ghost (tmavší odstín, neprůhledný)
   // → model vypadá jako plné těleso, podpory neprosvítají stěnami
-  const ghostColor = useMemo(() => {
-    const c = new THREE.Color(color);
-    c.multiplyScalar(0.62);
-    return "#" + c.getHexString();
-  }, [color]);
   return (
     <>
       <mesh geometry={geometry} castShadow receiveShadow>
