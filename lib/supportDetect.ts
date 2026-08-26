@@ -96,8 +96,9 @@ export function detectSupportAnchors(
       const py = Math.floor((gy + centerY + m.ty) * pxPerMmY);
       if (px < 0 || py < 0 || px >= resX || py >= resY) continue;
 
-      // vrchní vrstva sloupu = vrstva těsně pod spodní plochou modelu
-      const layer = Math.max(0, Math.floor(zRel / layerHeight - 0.5));
+      // vrchní vrstva sloupu = první vrstva UVNITŘ modelu nad spodní plochou
+      // (špička se dotýká modelu; sloup klesá od vrstvy níž)
+      const layer = Math.max(0, Math.ceil(zRel / layerHeight - 0.5));
 
       const cellX = Math.min(gW - 1, Math.floor(px / spacingPxX));
       const cellY = Math.min(gH - 1, Math.floor(py / spacingPxY));

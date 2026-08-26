@@ -187,13 +187,11 @@ export function generateSupports(
     }
   }
 
-  // sloupy od desky (vrstva 0) po vrchní vrstvu s podpěrou — jen v prázdném prostoru
+  // sloupy od desky (vrstva 0) po vrchní vrstvu s podpěrou — jen v prázdném prostoru.
+  // PrusaSlicer-style routing: když sloup narazí na model, ukloní se (bridge) a obejde ho.
   const orig = slice.layers.map((l) => l.data);
   for (const p of pillars) {
-    for (let li = 0; li <= p.top; li++) {
-      const r = li === p.top ? tip : radius;
-      fillCircleIfEmpty(layers[li], mask[li], orig[li], p.x, p.y, r, W, H);
-    }
+    routePillar(layers, mask, orig, p.x, p.y, p.top, radius, tip, W, H);
   }
 
   return {
@@ -205,4 +203,84 @@ export function generateSupports(
     },
     mask,
   };
+}
+
+/**
+ * Sloup podpory s routingem (jako stromové podpory v PrusaSliceru).
+ * Špička se dotýká modelu u kotvy; sloup klesá dolů a když narazí na model,
+ * ukloní se (hledá volné místo v okolí s lookaheadem) a obejde ho, aby došel
+ * až k desce. Maska se plní JEN do prázdného prostoru (neprochází stěnami).
+ */
+function routePillar(
+  layers: Uint8Array[],
+  mask: Uint8Array[],
+  orig: Uint8Array[],
+  ax: number,
+  ay: number,
+  topLayer: number,
+  radius: number,
+  tip: number,
+  W: number,
+  H: number
+) {
+  const N = layers.length;
+  // max. úhyb sloupu: ~7,5 mm (v px slicovacího rastru)
+  const pxPerMm = 223.642 / W;
+  const maxDetourPx = Math.max(4, Math.round(7.5 / pxPerMm));
+  // kruh kolem (x,y) v layer li zasahuje do modelu?
+  const blockedAt = (li: number, x: number, y: number, r: number): boolean => {
+    const l = orig[li];
+    const r2 = r * r;
+    const x0 = Math.max(0, x - r);
+    const x1 = Math.min(W - 1, x + r);
+    const y0 = Math.max(0, y - r);
+    const y1 = Math.min(H - 1, y + r);
+    for (let yy = y0; yy <= y1; yy++) {
+      const row = yy * W;
+      for (let xx = x0; xx <= x1; xx++) {
+        const dx = xx - x;
+        const dy = yy - y;
+        if (dx * dx + dy * dy <= r2 && l[row + xx]) return true;
+      }
+    }
+    return false;
+  };
+  // dá se z (x,y) v layer li klesat dál? (lookahead vrstev)
+  const descentFree = (li: number, x: number, y: number, r: number, k: number): boolean => {
+    for (let i = li; i >= Math.max(0, li - k); i--) {
+      if (blockedAt(i, x, y, r)) return false;
+    }
+    return true;
+  };
+
+  // špička vždy u kotvy (dotýká se modelu — to je správně)
+  fillCircleIfEmpty(layers[topLayer], mask[topLayer], orig[topLayer], ax, ay, tip, W, H);
+
+  let cx = ax;
+  let cy = ay;
+  for (let li = Math.min(topLayer - 1, N - 1); li >= 0; li--) {
+    if (!blockedAt(li, cx, cy, radius)) {
+      fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, radius, W, H);
+      continue;
+    }
+    // blokováno → úhyb: hledej volné místo v prstencích (od středu ven)
+    let found = false;
+    for (let ring = 1; ring <= maxDetourPx && !found; ring++) {
+      for (let dy = -ring; dy <= ring && !found; dy++) {
+        for (let dx = -ring; dx <= ring && !found; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+          if (!blockedAt(li, nx, ny, radius) && descentFree(li, nx, ny, radius, 15)) {
+            cx = nx;
+            cy = ny;
+            found = true;
+          }
+        }
+      }
+    }
+    if (!found) break; // zaseknutý — sloup končí (model je moc blízko)
+    fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, radius, W, H);
+  }
 }
