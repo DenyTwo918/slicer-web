@@ -1,4 +1,5 @@
 import type { SliceResult } from "./slice";
+import { nativeReady, wasmHollowShell } from "./native";
 
 export interface HollowOptions {
   enabled: boolean;
@@ -71,26 +72,30 @@ export function applyHollow(
     }
 
     // rychlá eroze: pixel zůstane, pokud okolí ve vzdálenosti wallPx je plné
-    const keep = new Uint8Array(W * H);
-    const isFilled = (x: number, y: number) => layer[y * W + x] !== 0;
-    for (let y = wallPx; y < H - wallPx; y++) {
-      const row = y * W;
-      for (let x = wallPx; x < W - wallPx; x++) {
-        const p = row + x;
-        if (!layer[p]) continue;
-        if (
-          isFilled(x + wallPx, y) &&
-          isFilled(x - wallPx, y) &&
-          isFilled(x, y + wallPx) &&
-          isFilled(x, y - wallPx)
-        ) {
-          keep[p] = 1;
+    if (nativeReady() && wallPx >= 1) {
+      out[i] = wasmHollowShell(layer, W, H, wallPx);
+    } else {
+      const keep = new Uint8Array(W * H);
+      const isFilled = (x: number, y: number) => layer[y * W + x] !== 0;
+      for (let y = wallPx; y < H - wallPx; y++) {
+        const row = y * W;
+        for (let x = wallPx; x < W - wallPx; x++) {
+          const p = row + x;
+          if (!layer[p]) continue;
+          if (
+            isFilled(x + wallPx, y) &&
+            isFilled(x - wallPx, y) &&
+            isFilled(x, y + wallPx) &&
+            isFilled(x, y - wallPx)
+          ) {
+            keep[p] = 1;
+          }
         }
       }
-    }
-    // hollow: filled a NE vnitřek
-    for (let p = 0; p < W * H; p++) {
-      if (keep[p]) layer[p] = 0;
+      // hollow: filled a NE vnitřek
+      for (let p = 0; p < W * H; p++) {
+        if (keep[p]) layer[p] = 0;
+      }
     }
 
     // odvodňovací otvory: vyříznout na okraji (pravý okraj vrstvy)

@@ -22,10 +22,10 @@ const ctx = self as unknown as {
   onmessage: ((ev: MessageEvent<SliceWorkerRequest>) => void) | null;
 };
 
-ctx.onmessage = (ev: MessageEvent<SliceWorkerRequest>) => {
+ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
   const { id, models, settings, printer } = ev.data;
   try {
-    const { result, supportMask } = runSlicePipeline(models, settings, printer);
+    const { result, supportMask } = await runSlicePipeline(models, settings, printer);
     // vrstvy a maska se přenesou bez kopie (transfer) — main thread je potřebuje,
     // worker po odeslání končí
     const transfer: Transferable[] = [];

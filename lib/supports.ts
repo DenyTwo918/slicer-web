@@ -1,4 +1,5 @@
 import type { SliceResult } from "./slice";
+import { nativeReady, wasmDilate } from "./native";
 
 export interface SupportOptions {
   enabled: boolean;
@@ -19,8 +20,10 @@ const DEFAULTS = {
   minComponentPx: 3,
 };
 
-/** Dilatace binárního rastru (box r×r) — "kde už bylo pod tím". */
+/** Dilatace binárního rastru (box r×r) — "kde už bylo pod tím".
+ *  S WASM kernely (SIMD) jde ~4–10× rychleji; jinak JS fallback. */
 function dilate(src: Uint8Array, W: number, H: number, r: number): Uint8Array {
+  if (nativeReady()) return wasmDilate(src, W, H, r);
   const out = new Uint8Array(W * H);
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {

@@ -4,6 +4,7 @@ import { generateSupports } from "./supports";
 import { applyHollow } from "./hollow";
 import { applyRaft } from "./raft";
 import { applyAA } from "./aa";
+import { initNative } from "./native";
 
 /** Model pro pipeline — jen data, která slicing potřebuje (posílá se do workera). */
 export interface PipelineModel {
@@ -57,11 +58,13 @@ export function sliceScale(resX: number, resY: number): number {
  * Čistá funkce — volá se z Web Workera (a jako fallback na hlavním vlákně).
  * Vrstvy a maska se vrací jako pole Uint8Array (transferable pro postMessage).
  */
-export function runSlicePipeline(
+export async function runSlicePipeline(
   models: PipelineModel[],
   settings: PipelineSettings,
   printer: PipelinePrinter
-): PipelineResult {
+): Promise<PipelineResult> {
+  // zkus načíst WASM kernely (selhání = null, pak JS fallback)
+  await initNative();
   if (models.length === 0) return { result: null, supportMask: null };
   const scale = sliceScale(printer.resX, printer.resY);
   const sliceW = printer.resX / scale;

@@ -1,4 +1,5 @@
 import type { SliceResult } from "./slice";
+import { nativeReady, wasmAaBlur } from "./native";
 
 /**
  * Anti-aliasing — 3×3 box blur binárního rastru → šedé hodnoty (0..255).
@@ -9,6 +10,10 @@ export function applyAA(slice: SliceResult): SliceResult {
   const H = slice.resolutionY;
   const layers = slice.layers.map((l) => {
     const src = l.data;
+    // WASM SIMD blur (rychlejší), jinak JS fallback
+    if (nativeReady()) {
+      return { index: l.index, z: l.z, data: wasmAaBlur(src, W, H) };
+    }
     const out = new Uint8Array(W * H);
     for (let y = 0; y < H; y++) {
       const y0 = Math.max(0, y - 1);

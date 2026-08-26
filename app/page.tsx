@@ -512,8 +512,7 @@ function sliceInWorker(
         reject(e);
       }
       return;
-    }
-    const handler = (ev: MessageEvent<SliceWorkerResponse>) => {
+    }    const handler = (ev: MessageEvent<SliceWorkerResponse>) => {
       const msg = ev.data;
       if (msg.id !== payload.id) return;
       worker.removeEventListener("message", handler);

@@ -1,4 +1,5 @@
 import type { SliceResult } from "./slice";
+import { nativeReady, wasmDilate } from "./native";
 
 export interface RaftOptions {
   enabled: boolean;
@@ -50,20 +51,25 @@ export function applyRaft(
   }
   const footprint = slice.layers[bottomIdx].data;
 
-  // rozšířit (box dilate o marginPx)
-  const raft = new Uint8Array(W * H);
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      if (!footprint[y * W + x]) continue;
-      const x0 = Math.max(0, x - marginPx);
-      const x1 = Math.min(W - 1, x + marginPx);
-      const y0 = Math.max(0, y - marginPx);
-      const y1 = Math.min(H - 1, y + marginPx);
-      for (let yy = y0; yy <= y1; yy++) {
-        raft.fill(1, yy * W + x0, yy * W + x1 + 1);
-      }
-    }
-  }
+  // rozšířit (box dilate o marginPx) — WASM SIMD, jinak JS
+  const raft = nativeReady()
+    ? wasmDilate(footprint, W, H, marginPx)
+    : (() => {
+        const r = new Uint8Array(W * H);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            if (!footprint[y * W + x]) continue;
+            const x0 = Math.max(0, x - marginPx);
+            const x1 = Math.min(W - 1, x + marginPx);
+            const y0 = Math.max(0, y - marginPx);
+            const y1 = Math.min(H - 1, y + marginPx);
+            for (let yy = y0; yy <= y1; yy++) {
+              r.fill(1, yy * W + x0, yy * W + x1 + 1);
+            }
+          }
+        }
+        return r;
+      })();
 
   const layers = slice.layers.map((l) => new Uint8Array(l.data));
   const mask = slice.layers.map(() => new Uint8Array(W * H));

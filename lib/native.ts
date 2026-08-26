@@ -1,0 +1,103 @@
+/**
+ * Nativní kernely (WASM SIMD) pro pixelové operace sliceru.
+ * Načte public/wasm/slice.wasm (9,6 KB, kompilováno zig cc -O3 -msimd128).
+ * Pokud se nenačte (CSP, starý prohlížeč, offline), vrátí null
+ * a volající použijí stávající JS implementace (fallback).
+ *
+ * Scratch paměť: sloty po n = W*H bytech: [0]=out, [1]=src, [2]=layer, [3]=mask, [4]=orig.
+ */
+
+let instance: WebAssembly.Instance | null = null;
+let promise: Promise<WebAssembly.Instance | null> | null = null;
+
+async function load(): Promise<WebAssembly.Instance | null> {
+  try {
+    let bytes: Uint8Array;
+    if (typeof process !== "undefined" && process.versions?.node) {
+      // Node (testy) — cesta z env, default repo root
+      const fs = await import("node:fs");
+      const p = process.env.NATIVE_WASM_PATH || "public/wasm/slice.wasm";
+      bytes = fs.readFileSync(p);
+    } else {
+      const res = await fetch("/wasm/slice.wasm", { cache: "force-cache" });
+      if (!res.ok) return null;
+      bytes = new Uint8Array(await res.arrayBuffer());
+    }
+    // Pozor: některá prostředí (Node, některé buildy) vrací { module, instance },
+    // jiná (spec prohlížeče) rovnou Instance — podpora obou
+    const r = (await WebAssembly.instantiate(bytes, {})) as
+      | WebAssembly.Instance
+      | { module: WebAssembly.Module; instance: WebAssembly.Instance };
+    return "instance" in r ? r.instance : r;
+  } catch {
+    return null;
+  }
+}
+
+/** Inicializace — zavolej jednou před použitím (await). Selhání = null. */
+export function initNative(): Promise<void> {
+  if (!promise) promise = load().then((i) => (instance = i));
+  return promise.then(() => undefined);
+}
+
+/** True, pokud jsou WASM kernely k dispozici. */
+export function nativeReady(): boolean {
+  return instance !== null;
+}
+
+interface SliceWasmExports {
+  dilate_box: (src: number, out: number, W: number, H: number, r: number) => void;
+  hollow_shell: (src: number, out: number, W: number, H: number, d: number) => void;
+  aa_blur: (src: number, out: number, W: number, H: number) => void;
+  fill_circle: (layer: number, cx: number, cy: number, r: number, W: number, H: number) => void;
+  fill_circle_if_empty: (
+    layer: number, mask: number, orig: number,
+    cx: number, cy: number, r: number, W: number, H: number
+  ) => void;
+  fill_span: (img: number, row: number, x0: number, x1: number, W: number) => void;
+  memory: WebAssembly.Memory;
+}
+
+function ex(): SliceWasmExports {
+  return instance!.exports as unknown as SliceWasmExports;
+}
+
+function ensureMem(n: number): Uint8Array<ArrayBuffer> {
+  const e = ex();
+  const need = 5 * n;
+  if (e.memory.buffer.byteLength < need) {
+    const pages = Math.ceil((need - e.memory.buffer.byteLength) / 65536);
+    e.memory.grow(pages);
+  }
+  return new Uint8Array(e.memory.buffer as ArrayBuffer);
+}
+
+const OUT = 0;
+const SRC = 1;
+
+/** Box dilate (2r+1)² — vrací nový rastr. */
+export function wasmDilate(src: Uint8Array, W: number, H: number, r: number): Uint8Array<ArrayBuffer> {
+  const n = W * H;
+  const view = ensureMem(n);
+  view.set(src, SRC * n);
+  ex().dilate_box(SRC * n, OUT * n, W, H, r);
+  return view.slice(0, n);
+}
+
+/** Hollow shell — vnitřek (4 směry do d) pryč; vrací nový rastr. */
+export function wasmHollowShell(src: Uint8Array, W: number, H: number, d: number): Uint8Array<ArrayBuffer> {
+  const n = W * H;
+  const view = ensureMem(n);
+  view.set(src, SRC * n);
+  ex().hollow_shell(SRC * n, OUT * n, W, H, d);
+  return view.slice(0, n);
+}
+
+/** AA 3×3 box blur binárního rastru → šedá 0..255; vrací nový rastr. */
+export function wasmAaBlur(src: Uint8Array, W: number, H: number): Uint8Array<ArrayBuffer> {
+  const n = W * H;
+  const view = ensureMem(n);
+  view.set(src, SRC * n);
+  ex().aa_blur(SRC * n, OUT * n, W, H);
+  return view.slice(0, n);
+}
