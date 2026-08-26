@@ -189,9 +189,12 @@ export function generateSupports(
 
   // sloupy od desky (vrstva 0) po vrchní vrstvu s podpěrou — jen v prázdném prostoru.
   // PrusaSlicer-style routing: když sloup narazí na model, ukloní se (bridge) a obejde ho.
+  // STROMY: nejvyšší sloup = kmen, ostatní se k němu sklánějí a spojují se s ním.
   const orig = slice.layers.map((l) => l.data);
-  for (const p of pillars) {
-    routePillar(layers, mask, orig, p.x, p.y, p.top, radius, tip, W, H);
+  const sorted = [...pillars].sort((a, b) => b.top - a.top);
+  const trunks: { x: number; y: number }[][] = []; // [vrstva] → středy kmenů
+  for (const p of sorted) {
+    routePillar(layers, mask, orig, p.x, p.y, p.top, radius, tip, W, H, trunks);
   }
 
   return {
@@ -221,12 +224,15 @@ function routePillar(
   radius: number,
   tip: number,
   W: number,
-  H: number
+  H: number,
+  trunks?: { x: number; y: number }[][]
 ) {
   const N = layers.length;
   // max. úhyb sloupu: ~7,5 mm (v px slicovacího rastru)
   const pxPerMm = 223.642 / W;
   const maxDetourPx = Math.max(4, Math.round(7.5 / pxPerMm));
+  // spojení se kmenem: středy blíž než 2× poloměr = kruhy se překrývají
+  const mergeDistPx = radius * 2;
   // kruh kolem (x,y) v layer li zasahuje do modelu?
   const blockedAt = (li: number, x: number, y: number, r: number): boolean => {
     const l = orig[li];
@@ -256,31 +262,88 @@ function routePillar(
   // špička vždy u kotvy (dotýká se modelu — to je správně)
   fillCircleIfEmpty(layers[topLayer], mask[topLayer], orig[topLayer], ax, ay, tip, W, H);
 
+  // nejbližší kmen na dané vrstvě
+  const nearestTrunk = (li: number, x: number, y: number) => {
+    if (!trunks || !trunks[li]) return null;
+    let bestD = Infinity;
+    let bx = -1;
+    let by = -1;
+    for (const c of trunks[li]) {
+      const d = Math.hypot(c.x - x, c.y - y);
+      if (d < bestD) {
+        bestD = d;
+        bx = c.x;
+        by = c.y;
+      }
+    }
+    return bestD === Infinity ? null : { d: bestD, x: bx, y: by };
+  };
+
+  const trace: { li: number; x: number; y: number }[] = [{ li: topLayer, x: ax, y: ay }];
   let cx = ax;
   let cy = ay;
   for (let li = Math.min(topLayer - 1, N - 1); li >= 0; li--) {
-    if (!blockedAt(li, cx, cy, radius)) {
-      fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, radius, W, H);
-      continue;
+    // 1) spojení se kmenem?
+    const t = nearestTrunk(li, cx, cy);
+    if (t && t.d <= mergeDistPx) {
+      trace.push({ li, x: cx, y: cy });
+      if (trunks) {
+        for (const t2 of trace) {
+          (trunks[t2.li] ??= []).push({ x: t2.x, y: t2.y });
+        }
+      }
+      return; // spojeno — dál pokračuje kmen
     }
-    // blokováno → úhyb: hledej volné místo v prstencích (od středu ven)
-    let found = false;
-    for (let ring = 1; ring <= maxDetourPx && !found; ring++) {
-      for (let dy = -ring; dy <= ring && !found; dy++) {
-        for (let dx = -ring; dx <= ring && !found; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
-          const nx = cx + dx;
-          const ny = cy + dy;
-          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-          if (!blockedAt(li, nx, ny, radius) && descentFree(li, nx, ny, radius, 15)) {
-            cx = nx;
-            cy = ny;
-            found = true;
+
+    // 2) blokováno → úhyb: hledej volné místo v prstencích (od středu ven)
+    if (blockedAt(li, cx, cy, radius)) {
+      let found = false;
+      for (let ring = 1; ring <= maxDetourPx && !found; ring++) {
+        for (let dy = -ring; dy <= ring && !found; dy++) {
+          for (let dx = -ring; dx <= ring && !found; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+            if (!blockedAt(li, nx, ny, radius) && descentFree(li, nx, ny, radius, 15)) {
+              cx = nx;
+              cy = ny;
+              found = true;
+            }
           }
         }
       }
+      if (!found) break; // zaseknutý — sloup končí (model je moc blízko)
+      fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, radius, W, H);
+      trace.push({ li, x: cx, y: cy });
+      continue;
     }
-    if (!found) break; // zaseknutý — sloup končí (model je moc blízko)
+
+    // 3) volno → skláněj se ke kmenu (pokud je dosažitelný), jinak rovně
+    if (t && t.d <= mergeDistPx + li * 2) {
+      // dosažitelnost: zbylých `li` vrstev × max 2 px/vrstvu
+      const dx = t.x - cx;
+      const dy = t.y - cy;
+      const len = Math.hypot(dx, dy) || 1;
+      const step = Math.min(2, len);
+      const nx = cx + Math.round((dx / len) * step);
+      const ny = cy + Math.round((dy / len) * step);
+      if (!blockedAt(li, nx, ny, radius)) {
+        cx = nx;
+        cy = ny;
+        fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, radius, W, H);
+        trace.push({ li, x: cx, y: cy });
+        continue;
+      }
+    }
     fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, radius, W, H);
+    trace.push({ li, x: cx, y: cy });
+  }
+
+  // sloup dokončen → registruj trasu jako kmen pro budoucí sloupy
+  if (trunks) {
+    for (const t2 of trace) {
+      (trunks[t2.li] ??= []).push({ x: t2.x, y: t2.y });
+    }
   }
 }
