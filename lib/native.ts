@@ -56,6 +56,10 @@ interface SliceWasmExports {
   ) => void;
   fill_span: (img: number, row: number, x0: number, x1: number, W: number) => void;
   fill_between: (front: number, back: number, out: number, z: number, wall: number, W: number, H: number) => void;
+  fill_between16: (
+    front: number, back: number, out: number,
+    zq: number, wallq: number, W: number, H: number, stats: number
+  ) => void;
   memory: WebAssembly.Memory;
 }
 
@@ -143,4 +147,66 @@ export function fillBetweenZ(z: number, wall: number, W: number, H: number): Uin
   const view = new Uint8Array(ex().memory.buffer as ArrayBuffer);
   ex().fill_between(front, back, out, z, wall, W, H);
   return view.slice(out, out + n);
+}
+
+/* ------------------------------------------------------------------ */
+/* Full-res (12K): uint16 kvantizované depth mapy, rezidentní ve wasm  */
+/* Region: base16 = 14*n (za scratchem 0..5n a float-depth 5n..14n):   */
+/*   front (2n), back (2n), out (n), stats (64 B)                      */
+/* Rasterizér zapisuje přímo do těchto views (žádná duplicitní kopie). */
+/* ------------------------------------------------------------------ */
+
+let fullN = -1;
+
+function fullOffsets(n: number) {
+  const base = 14 * n;
+  return {
+    front: base,
+    back: base + 2 * n,
+    out: base + 4 * n,
+    stats: base + 5 * n,
+    need: base + 5 * n + 64,
+  };
+}
+
+/** Alokuje full-res depth region ve wasm paměti — rasterizér píše přímo do views. */
+export function fullDepthRegion(
+  n: number
+): { front: Uint16Array<ArrayBuffer>; back: Uint16Array<ArrayBuffer> } {
+  const off = fullOffsets(n);
+  ensureBytes(off.need);
+  const mem = ex().memory.buffer as ArrayBuffer;
+  fullN = n;
+  return {
+    front: new Uint16Array(mem, off.front, n),
+    back: new Uint16Array(mem, off.back, n),
+  };
+}
+
+/**
+ * Plnění full-res vrstvy z uint16 depth map.
+ * Vrací VIEW do wasm paměti (platí do dalšího volání!) + statistiky.
+ */
+export function fillBetween16Z(
+  zq: number,
+  wallq: number,
+  W: number,
+  H: number
+): { data: Uint8Array<ArrayBuffer>; count: number; minX: number; maxX: number; minY: number; maxY: number } {
+  const n = W * H;
+  if (n !== fullN) throw new Error("fillBetween16Z: region není alokovaný");
+  const off = fullOffsets(n);
+  ensureBytes(off.need);
+  ex().fill_between16(off.front, off.back, off.out, zq, wallq, W, H, off.stats);
+  const mem = ex().memory.buffer as ArrayBuffer;
+  const data = new Uint8Array(mem, off.out, n);
+  const s = new Int32Array(mem, off.stats, 5);
+  return {
+    data,
+    count: s[0],
+    minX: s[1],
+    maxX: s[2],
+    minY: s[3],
+    maxY: s[4],
+  };
 }

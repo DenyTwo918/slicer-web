@@ -75,6 +75,8 @@ interface SliceSettings {
   supportMaxAngleDeg: number;
   supportSpacingMm: number;
   supportClearanceMm: number;
+  /** full-res 12K streaming export (pomalé, ale nativní rozlišení) */
+  fullResExport: boolean;
 }
 
 const DEFAULT_SETTINGS: SliceSettings = {
@@ -100,6 +102,7 @@ const DEFAULT_SETTINGS: SliceSettings = {
   supportMaxAngleDeg: 35,
   supportSpacingMm: 8,
   supportClearanceMm: 1,
+  fullResExport: false,
 };
 
 const SLOT_OFFSETS: [number, number][] = [
@@ -466,6 +469,106 @@ function getSliceWorker(): Worker {
   return sliceWorker;
 }
 
+/** Náhledové PNG vygenerované na hlavním vlákně (canvas). */
+async function genPreviewBytes(
+  slice: SliceResult,
+  layerIdx: number,
+  w: number,
+  h: number
+): Promise<Uint8Array> {
+  const layer = slice.layers[layerIdx];
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D není dostupné.");
+  ctx.fillStyle = "#052636";
+  ctx.fillRect(0, 0, w, h);
+  const sx = w / slice.resolutionX;
+  const sy = h / slice.resolutionY;
+  const src = layer.data;
+  for (let y = 0; y < slice.resolutionY; y++) {
+    for (let x = 0; x < slice.resolutionX; x++) {
+      const v = src[y * slice.resolutionX + x];
+      if (v > 0) {
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(x * sx, y * sy, sx + 1, sy + 1);
+      }
+    }
+  }
+  const blob = await new Promise<Blob>((res, rej) =>
+    canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob selhalo"))), "image/png")
+  );
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+/** Full-res (12K) streaming export ve workeru. */
+async function exportFullInWorker(
+  models: ModelItem[],
+  settings: SliceSettings,
+  printer: PrinterProfile,
+  exposures: {
+    bottomExposure: number;
+    normalExposure: number;
+    bottomLayers: number;
+    zupHeightBottom: number;
+    zupSpeedBottom: number;
+    zupHeight: number;
+    zupSpeed: number;
+    printTimeS: number;
+  },
+  previews: [Uint8Array, Uint8Array]
+): Promise<Uint8Array> {
+  const worker = getSliceWorker();
+  const id = ++sliceSeq;
+  return new Promise((resolve, reject) => {
+    const handler = (ev: MessageEvent<SliceWorkerResponse>) => {
+      const msg = ev.data;
+      if (msg.id !== id) return;
+      worker.removeEventListener("message", handler);
+      if (msg.ok && msg.bytes) resolve(msg.bytes);
+      else reject(new Error(msg.error ?? "Full-res export selhal."));
+    };
+    worker.addEventListener("message", handler);
+    worker.postMessage({
+      id,
+      kind: "exportFull",
+      models: models.map((m) => ({
+        positions: m.mesh.positions,
+        bounds: m.mesh.bounds,
+        triangleCount: m.mesh.triangleCount,
+        tx: m.transform.x,
+        ty: m.transform.y,
+      })),
+      settings: {
+        layerHeight: settings.layerHeight,
+        hollow: settings.hollow,
+        wallMm: settings.wallMm,
+        holeDiaMm: settings.holeDiaMm,
+        drainHoles: settings.drainHoles,
+        supports: settings.supports,
+        supportRadiusMm: settings.supportRadiusMm,
+        supportTipMm: settings.supportTipMm,
+        supportMaxAngleDeg: settings.supportMaxAngleDeg,
+        supportSpacingMm: settings.supportSpacingMm,
+        supportClearanceMm: settings.supportClearanceMm,
+        raft: settings.raft,
+        raftLayers: settings.raftLayers,
+        raftMarginMm: settings.raftMarginMm,
+        aa: false, // full-res: AA se nepoužívá (nativní pixely)
+      } satisfies PipelineSettings,
+      printer: {
+        resX: printer.resX,
+        resY: printer.resY,
+        printX: printer.printX,
+        printY: printer.printY,
+      },
+      exposures,
+      previews,
+    });
+  });
+}
+
 /**
  * Spustí slicování ve workeru. Vrstvy se přenesou přes transfer (bez kopie).
  * Pokud worker selže (CSP apod.), spadne na synchronní CPU pipeline (fallback).
@@ -607,21 +710,45 @@ const doSlice = useCallback(async () => {
 
   const buildExport = useCallback(async (): Promise<{ bytes: Uint8Array; name: string } | null> => {
     if (!sliceResult || models.length === 0) return null;
-    const bytes = await buildPm7(
-      models.map((m) => applyTransform(m.mesh, m.transform)),
-      sliceResult,
-      {
-        printer,
+    let bytes: Uint8Array;
+    if (settings.fullResExport) {
+      // full-res 12K streaming export ve workeru (náhledy generuje hlavní vlákno)
+      const previews = await Promise.all([
+        genPreviewBytes(sliceResult, 0, 224, 168),
+        genPreviewBytes(
+          sliceResult,
+          Math.max(1, Math.floor(sliceResult.layers.length / 2)),
+          224,
+          168
+        ),
+      ]);
+      bytes = await exportFullInWorker(models, settings, printer, {
         bottomExposure: settings.bottomExposure,
         normalExposure: settings.normalExposure,
         bottomLayers: settings.bottomLayers,
-        zupHeight: settings.zupHeight,
-        zupSpeed: settings.zupSpeed,
         zupHeightBottom: settings.zupHeightBottom,
         zupSpeedBottom: settings.zupSpeedBottom,
+        zupHeight: settings.zupHeight,
+        zupSpeed: settings.zupSpeed,
         printTimeS: estPrintTime,
-      }
-    );
+      }, previews);
+    } else {
+      bytes = await buildPm7(
+        models.map((m) => applyTransform(m.mesh, m.transform)),
+        sliceResult,
+        {
+          printer,
+          bottomExposure: settings.bottomExposure,
+          normalExposure: settings.normalExposure,
+          bottomLayers: settings.bottomLayers,
+          zupHeight: settings.zupHeight,
+          zupSpeed: settings.zupSpeed,
+          zupHeightBottom: settings.zupHeightBottom,
+          zupSpeedBottom: settings.zupSpeedBottom,
+          printTimeS: estPrintTime,
+        }
+      );
+    }
     return { bytes, name: `${exportName}.${printer.keySuffix}` };
   }, [sliceResult, models, settings, printer, exportName, estPrintTime]);
 
@@ -1192,6 +1319,14 @@ const doSlice = useCallback(async () => {
                   setExportName(e.target.value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12))
                 }
               />
+            </label>
+            <label className="set-row check" title="Export v nativním 11520×5120 — pomalé (minuty), ale plný detail. Vyžaduje slicování před exportem.">
+              <input
+                type="checkbox"
+                checked={settings.fullResExport}
+                onChange={(e) => setSettings((s) => ({ ...s, fullResExport: e.target.checked }))}
+              />
+              <span>Full-res 12K export</span>
             </label>
             <details open>
               <summary>Základní</summary>

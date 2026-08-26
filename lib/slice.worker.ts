@@ -1,21 +1,39 @@
 import { runSlicePipeline, type PipelineModel, type PipelinePrinter, type PipelineSettings } from "./pipeline";
 import type { SliceResult } from "./slice";
+import { buildPm7FullRes } from "./fullRes";
+import type { PrinterProfile } from "./profiles";
 
 export interface SliceWorkerRequest {
   id: number;
+  kind?: "slice" | "exportFull";
   models: PipelineModel[];
   settings: PipelineSettings;
-  printer: PipelinePrinter;
+  printer: PrinterProfile;
   forceCpu?: boolean;
+  /** pro kind=exportFull */
+  exposures?: {
+    bottomExposure: number;
+    normalExposure: number;
+    bottomLayers: number;
+    zupHeightBottom: number;
+    zupSpeedBottom: number;
+    zupHeight: number;
+    zupSpeed: number;
+    printTimeS: number;
+  };
+  /** náhledy vygenerované na hlavním vlákně (canvas) */
+  previews?: [Uint8Array, Uint8Array] | null;
 }
 
 export interface SliceWorkerResponse {
   id: number;
   ok: boolean;
+  kind?: "slice" | "exportFull";
   error?: string;
   result?: SliceResult | null;
   supportMask?: Uint8Array[] | null;
   engine?: "gpu" | "cpu";
+  bytes?: Uint8Array;
 }
 
 /** Worker scope (typování bez konfliktu s dom lib) */
@@ -25,7 +43,32 @@ const ctx = self as unknown as {
 };
 
 ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
-  const { id, models, settings, printer, forceCpu } = ev.data;
+  const { id, kind } = ev.data;
+
+  // full-res streaming export
+  if (kind === "exportFull") {
+    const { models, settings, printer, exposures, previews } = ev.data;
+    try {
+      const res = await buildPm7FullRes(
+        models,
+        settings,
+        printer,
+        models,
+        { ...(exposures ?? {}), previewSlice: null, previews: previews ?? null }
+      );
+      const bytes = res.bytes;
+      ctx.postMessage({ id, ok: true, kind: "exportFull", bytes }, [bytes.buffer]);
+    } catch (err) {
+      ctx.postMessage({
+        id,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  const { models, settings, printer, forceCpu } = ev.data;
   try {
     const { result, supportMask, engine } = await runSlicePipeline(models, settings, printer, { forceCpu });
     // vrstvy a maska se přenesou bez kopie (transfer) — main thread je potřebuje,

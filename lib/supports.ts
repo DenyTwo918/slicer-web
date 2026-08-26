@@ -193,8 +193,13 @@ export function generateSupports(
   const orig = slice.layers.map((l) => l.data);
   const sorted = [...pillars].sort((a, b) => b.top - a.top);
   const trunks: { x: number; y: number }[][] = []; // [vrstva] → středy kmenů
+  const ctx: PillarCtx = {
+    N: layers.length,
+    modelAt: (li, x, y) => orig[li][y * W + x] !== 0,
+    fill: (li, cx, cy, r) => fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, r, W, H),
+  };
   for (const p of sorted) {
-    routePillar(layers, mask, orig, p.x, p.y, p.top, radius, tip, W, H, trunks);
+    routePillar(ctx, p.x, p.y, p.top, radius, tip, W, H, trunks);
   }
 
   return {
@@ -209,15 +214,26 @@ export function generateSupports(
 }
 
 /**
+ * Abstrakce routingu: dotaz na model + plnění — funguje pro bitmapy
+ * (slice pipeline) i pro full-res depth mapy (streaming export).
+ */
+export interface PillarCtx {
+  /** počet vrstev */
+  N: number;
+  /** je pixel součástí modelu ve vrstvě li? */
+  modelAt(li: number, x: number, y: number): boolean;
+  /** vyplň kruh podpory (r) ve vrstvě li — jen do prázdného prostoru */
+  fill(li: number, cx: number, cy: number, r: number): void;
+}
+
+/**
  * Sloup podpory s routingem (jako stromové podpory v PrusaSliceru).
  * Špička se dotýká modelu u kotvy; sloup klesá dolů a když narazí na model,
  * ukloní se (hledá volné místo v okolí s lookaheadem) a obejde ho, aby došel
- * až k desce. Maska se plní JEN do prázdného prostoru (neprochází stěnami).
+ * až k desce. Vrací trasu [(li,x,y)...] — pro stromové spojování i full-res.
  */
 function routePillar(
-  layers: Uint8Array[],
-  mask: Uint8Array[],
-  orig: Uint8Array[],
+  ctx: PillarCtx,
   ax: number,
   ay: number,
   topLayer: number,
@@ -226,8 +242,8 @@ function routePillar(
   W: number,
   H: number,
   trunks?: { x: number; y: number }[][]
-) {
-  const N = layers.length;
+): { li: number; x: number; y: number; tip: boolean }[] {
+  const N = ctx.N;
   // max. úhyb sloupu: ~7,5 mm (v px slicovacího rastru)
   const pxPerMm = 223.642 / W;
   const maxDetourPx = Math.max(4, Math.round(7.5 / pxPerMm));
@@ -235,18 +251,16 @@ function routePillar(
   const mergeDistPx = radius * 2;
   // kruh kolem (x,y) v layer li zasahuje do modelu?
   const blockedAt = (li: number, x: number, y: number, r: number): boolean => {
-    const l = orig[li];
     const r2 = r * r;
     const x0 = Math.max(0, x - r);
     const x1 = Math.min(W - 1, x + r);
     const y0 = Math.max(0, y - r);
     const y1 = Math.min(H - 1, y + r);
     for (let yy = y0; yy <= y1; yy++) {
-      const row = yy * W;
       for (let xx = x0; xx <= x1; xx++) {
         const dx = xx - x;
         const dy = yy - y;
-        if (dx * dx + dy * dy <= r2 && l[row + xx]) return true;
+        if (dx * dx + dy * dy <= r2 && ctx.modelAt(li, xx, yy)) return true;
       }
     }
     return false;
@@ -260,7 +274,7 @@ function routePillar(
   };
 
   // špička vždy u kotvy (dotýká se modelu — to je správně)
-  fillCircleIfEmpty(layers[topLayer], mask[topLayer], orig[topLayer], ax, ay, tip, W, H);
+  ctx.fill(topLayer, ax, ay, tip);
 
   // nejbližší kmen na dané vrstvě
   const nearestTrunk = (li: number, x: number, y: number) => {
@@ -279,20 +293,22 @@ function routePillar(
     return bestD === Infinity ? null : { d: bestD, x: bx, y: by };
   };
 
-  const trace: { li: number; x: number; y: number }[] = [{ li: topLayer, x: ax, y: ay }];
+  const trace: { li: number; x: number; y: number; tip: boolean }[] = [
+    { li: topLayer, x: ax, y: ay, tip: true },
+  ];
   let cx = ax;
   let cy = ay;
   for (let li = Math.min(topLayer - 1, N - 1); li >= 0; li--) {
     // 1) spojení se kmenem?
     const t = nearestTrunk(li, cx, cy);
     if (t && t.d <= mergeDistPx) {
-      trace.push({ li, x: cx, y: cy });
+      trace.push({ li, x: cx, y: cy, tip: false });
       if (trunks) {
         for (const t2 of trace) {
           (trunks[t2.li] ??= []).push({ x: t2.x, y: t2.y });
         }
       }
-      return; // spojeno — dál pokračuje kmen
+      return trace; // spojeno — dál pokračuje kmen
     }
 
     // 2) blokováno → úhyb: hledej volné místo v prstencích (od středu ven)
@@ -314,8 +330,8 @@ function routePillar(
         }
       }
       if (!found) break; // zaseknutý — sloup končí (model je moc blízko)
-      fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, radius, W, H);
-      trace.push({ li, x: cx, y: cy });
+      ctx.fill(li, cx, cy, radius);
+      trace.push({ li, x: cx, y: cy, tip: false });
       continue;
     }
 
@@ -331,13 +347,13 @@ function routePillar(
       if (!blockedAt(li, nx, ny, radius)) {
         cx = nx;
         cy = ny;
-        fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, radius, W, H);
-        trace.push({ li, x: cx, y: cy });
+        ctx.fill(li, cx, cy, radius);
+        trace.push({ li, x: cx, y: cy, tip: false });
         continue;
       }
     }
-    fillCircleIfEmpty(layers[li], mask[li], orig[li], cx, cy, radius, W, H);
-    trace.push({ li, x: cx, y: cy });
+    ctx.fill(li, cx, cy, radius);
+    trace.push({ li, x: cx, y: cy, tip: false });
   }
 
   // sloup dokončen → registruj trasu jako kmen pro budoucí sloupy
@@ -346,4 +362,28 @@ function routePillar(
       (trunks[t2.li] ??= []).push({ x: t2.x, y: t2.y });
     }
   }
+  return trace;
+}
+
+/**
+ * Routing podpor POUZE s trasou (bez plnění bitmap) — pro full-res streaming
+ * export, kde vrstvy nejsou materializované. `modelAt` dotazuje depth mapy.
+ */
+export function routeSupportTraces(
+  anchors: { x: number; y: number; layer: number }[],
+  ctx: PillarCtx,
+  radiusPx: number,
+  tipPx: number,
+  W: number,
+  H: number
+): { li: number; x: number; y: number; tip: boolean }[][] {
+  const sorted = [...anchors].sort((a, b) => b.layer - a.layer);
+  const trunks: { x: number; y: number }[][] = [];
+  const traces: { li: number; x: number; y: number; tip: boolean }[][] = [];
+  for (const a of sorted) {
+    if (a.x < 0 || a.y < 0 || a.x >= W || a.y >= H) continue;
+    const top = Math.min(Math.max(0, a.layer), ctx.N - 1);
+    traces.push(routePillar(ctx, a.x, a.y, top, radiusPx, tipPx, W, H, trunks));
+  }
+  return traces;
 }

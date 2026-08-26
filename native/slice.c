@@ -138,3 +138,34 @@ void fill_between(const float* front, const float* back, u8* out, float z, float
     out[i] = (f < z && z < b) ? 1 : 0;
   }
 }
+
+/* --- Full-res: totéž s uint16 kvantizovanými depth mapami + statistiky.
+ *     stats[0]=count, [1]=minX, [2]=maxX, [3]=minY, [4]=maxY (-1 když prázdné). --- */
+__attribute__((export_name("fill_between16")))
+void fill_between16(const unsigned short* front, const unsigned short* back, u8* out,
+                    float zq, float wallq, int W, int H, int* stats) {
+  const u32 n = (u32)W * (u32)H;
+  int count = 0;
+  int minX = W, maxX = -1, minY = H, maxY = -1;
+  for (u32 i = 0; i < n; i++) {
+    float f = (float)front[i] + wallq;
+    float b = (float)back[i] - wallq;
+    if (f < zq && zq < b) {
+      out[i] = 1;
+      count++;
+      int x = (int)(i % (u32)W);
+      int y = (int)(i / (u32)W);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    } else {
+      out[i] = 0;
+    }
+  }
+  stats[0] = count;
+  stats[1] = minX;
+  stats[2] = maxX;
+  stats[3] = minY;
+  stats[4] = maxY;
+}

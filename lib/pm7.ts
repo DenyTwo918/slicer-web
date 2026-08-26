@@ -76,6 +76,33 @@ export function encodeRlePw0(data: Uint8Array): Uint8Array {
 }
 
 /**
+ * Kóduje plnorozlišovací bitmapu (scale 1) do RLE4 — pro full-res streaming export.
+ */
+export function encodeLayerToMachineInternal(
+  data: Uint8Array,
+  resX: number,
+  resY: number,
+  _machine: PrinterProfile
+): Uint8Array {
+  const w = rleWriter();
+  for (let y = 0; y < resY; y++) {
+    let c = data[y * resX] ? 0xf : 0;
+    let len = 1;
+    for (let x = 1; x < resX; x++) {
+      const nc = data[y * resX + x] ? 0xf : 0;
+      if (nc === c) len++;
+      else {
+        w.push(c, len);
+        c = nc;
+        len = 1;
+      }
+    }
+    w.push(c, len);
+  }
+  return w.finish();
+}
+
+/**
  * Up-scale vrstvy na plné rozlišení tiskárny a zakóduje RLE4 PŘÍMO (streaming).
  * Předpokládá, že rozlišení slice dělí rozlišení stroje beze zbytku (scale = 8/4/2/1).
  */
@@ -133,7 +160,7 @@ class BinWriter {
   }
 }
 
-interface SceneLayerInfo {
+export interface SceneLayerInfo {
   z: number;
   areaMm2: number;
   x0: number;
@@ -141,7 +168,6 @@ interface SceneLayerInfo {
   x1: number;
   y1: number;
 }
-
 export function encodeSceneSlice(
   opts: {
     layerCount: number;
@@ -190,7 +216,7 @@ export function encodeSceneSlice(
 
 // ------------------------------------------------------------- JSON soubory
 
-function buildPwsp(machine: PrinterProfile) {
+export function buildPwsp(machine: PrinterProfile) {
   return {
     machine_extern: {
       active_resins: ["user_resin"],
@@ -281,20 +307,29 @@ function buildLayersController(
   layerTimes: number[],
   zup: { zupHeightBottom: number; zupSpeedBottom: number; zupHeight: number; zupSpeed: number }
 ) {
+  return buildLayersControllerFrom(slice.layers.length, slice.layerHeight, layerTimes, zup);
+}
+
+export function buildLayersControllerFrom(
+  count: number,
+  layerHeight: number,
+  layerTimes: number[],
+  zup: { zupHeightBottom: number; zupSpeedBottom: number; zupHeight: number; zupSpeed: number }
+) {
   return {
-    count: slice.layers.length,
-    paras: slice.layers.map((l, i) => ({
+    count,
+    paras: Array.from({ length: count }, (_, i) => ({
       layer_index: i,
       exposure_time: layerTimes[i],
-      layer_minheight: Number((i * slice.layerHeight).toFixed(4)),
-      layer_thickness: Number(slice.layerHeight.toFixed(4)),
+      layer_minheight: Number((i * layerHeight).toFixed(4)),
+      layer_thickness: Number(layerHeight.toFixed(4)),
       zup_height: i < 5 ? zup.zupHeightBottom : zup.zupHeight,
       zup_speed: i < 5 ? zup.zupSpeedBottom : zup.zupSpeed,
     })),
   };
 }
 
-function buildPrintInfo(volumeMl: number, printTimeS: number) {
+export function buildPrintInfo(volumeMl: number, printTimeS: number) {
   return {
     cost: 0,
     currency: "$",
