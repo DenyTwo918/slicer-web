@@ -126,3 +126,15 @@ void fill_span(u8* img, int row, int x0, int x1, int W) {
   u8* r = img + (u32)row * W;
   for (int x = x0; x <= x1; x++) r[x] = 1;
 }
+
+/* --- Plnění vrstvy z depth map (WebGPU slicing): solid = front+wall < z < back-wall.
+ *     front/back jsou float pole v mm (W*H). out = 0/1. --- */
+__attribute__((export_name("fill_between")))
+void fill_between(const float* front, const float* back, u8* out, float z, float wall, int W, int H) {
+  const u32 n = (u32)W * (u32)H;
+  for (u32 i = 0; i < n; i++) {
+    float f = front[i] + wall;
+    float b = back[i] - wall;
+    out[i] = (f < z && z < b) ? 1 : 0;
+  }
+}

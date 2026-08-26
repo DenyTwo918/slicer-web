@@ -55,6 +55,7 @@ interface SliceWasmExports {
     cx: number, cy: number, r: number, W: number, H: number
   ) => void;
   fill_span: (img: number, row: number, x0: number, x1: number, W: number) => void;
+  fill_between: (front: number, back: number, out: number, z: number, wall: number, W: number, H: number) => void;
   memory: WebAssembly.Memory;
 }
 
@@ -100,4 +101,46 @@ export function wasmAaBlur(src: Uint8Array, W: number, H: number): Uint8Array<Ar
   view.set(src, SRC * n);
   ex().aa_blur(SRC * n, OUT * n, W, H);
   return view.slice(0, n);
+}
+
+/* ------------------------------------------------------------------ */
+/* Depth slicing (WebGPU): depth mapy zůstávají v wasm paměti rezidentně */
+/* Region: base = 5*n; front (4n), back (4n), out (n) — mimo scratch 0..5n */
+/* ------------------------------------------------------------------ */
+
+let depthN = -1;
+
+function depthOffsets(n: number): { front: number; back: number; out: number; need: number } {
+  const base = 5 * n;
+  return { front: base, back: base + 4 * n, out: base + 8 * n, need: base + 9 * n };
+}
+
+function ensureBytes(need: number): Uint8Array<ArrayBuffer> {
+  const e = ex();
+  if (e.memory.buffer.byteLength < need) {
+    const pages = Math.ceil((need - e.memory.buffer.byteLength) / 65536);
+    e.memory.grow(pages);
+  }
+  return new Uint8Array(e.memory.buffer as ArrayBuffer);
+}
+
+/** Nahraje front/back depth mapy (mm, Float32) do wasm paměti — zavolej jednou. */
+export function uploadDepth(front: Float32Array, back: Float32Array, n: number): void {
+  const { front: fOff, back: bOff, need } = depthOffsets(n);
+  ensureBytes(need);
+  const f32 = new Float32Array(ex().memory.buffer as ArrayBuffer);
+  f32.set(front, fOff / 4);
+  f32.set(back, bOff / 4);
+  depthN = n;
+}
+
+/** Plnění vrstvy z nahraných depth map: solid = front + wall < z < back - wall. */
+export function fillBetweenZ(z: number, wall: number, W: number, H: number): Uint8Array<ArrayBuffer> {
+  const n = W * H;
+  if (n !== depthN) throw new Error("fillBetweenZ: nahraj nejdřív uploadDepth");
+  const { front, back, out, need } = depthOffsets(n);
+  ensureBytes(need);
+  const view = new Uint8Array(ex().memory.buffer as ArrayBuffer);
+  ex().fill_between(front, back, out, z, wall, W, H);
+  return view.slice(out, out + n);
 }

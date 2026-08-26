@@ -468,7 +468,7 @@ function sliceInWorker(
   models: ModelItem[],
   settings: SliceSettings,
   printer: PrinterProfile
-): Promise<{ result: SliceResult | null; supportMask: Uint8Array[] | null }> {
+): Promise<{ result: SliceResult | null; supportMask: Uint8Array[] | null; engine: "gpu" | "cpu" }> {
   const payload = {
     id: ++sliceSeq,
     models: models.map((m) => ({
@@ -498,6 +498,7 @@ function sliceInWorker(
       printX: printer.printX,
       printY: printer.printY,
     },
+    forceCpu: !!(globalThis as any).__forceCpu,
   };
 
   return new Promise((resolve, reject) => {
@@ -517,7 +518,7 @@ function sliceInWorker(
       if (msg.id !== payload.id) return;
       worker.removeEventListener("message", handler);
       if (msg.ok && msg.result) {
-        resolve({ result: msg.result, supportMask: msg.supportMask ?? null });
+        resolve({ result: msg.result, supportMask: msg.supportMask ?? null, engine: msg.engine ?? "cpu" });
       } else {
         reject(new Error(msg.error ?? "Slicování selhalo."));
       }
@@ -531,11 +532,41 @@ const doSlice = useCallback(async () => {
   if (models.length === 0) return;
   setSlicing(true);
   try {
-    const { result, supportMask: sm } = await sliceInWorker(models, settings, printer);
+    const { result, supportMask: sm, engine } = await sliceInWorker(models, settings, printer);
     if (result) {
       setSliceResult(result);
       setSupportMask(sm);
       setSliceIdx(0);
+      if (typeof window !== "undefined") {
+        // debug hook pro headless testy (hash + pixelové počty vzorků pro porovnání GPU/CPU)
+        const fnv = (a: Uint8Array, h: number) => {
+          for (let i = 0; i < a.length; i++) h = ((h ^ a[i]) * 16777619) >>> 0;
+          return h;
+        };
+        const countPx = (a: Uint8Array) => {
+          let c = 0;
+          for (let i = 0; i < a.length; i++) c += a[i] ? 1 : 0;
+          return c;
+        };
+        let h = 2166136261 >>> 0;
+        const n = result.layers.length;
+        const idxs = [0, Math.floor(n / 2), n - 1];
+        const samples: number[] = [];
+        for (const idx of idxs) {
+          if (idx >= 0 && idx < n) {
+            h = fnv(result.layers[idx].data, h);
+            samples.push(countPx(result.layers[idx].data));
+          }
+        }
+        (window as any).__lastSlice = {
+          engine,
+          layers: n,
+          resX: result.resolutionX,
+          resY: result.resolutionY,
+          hash: h,
+          samples,
+        };
+      }
       showToast(
         "ok",
         `Naslicováno ✓ · ${result.layers.length} vrstev · ${result.layerHeight} mm${settings.supports ? " · podpory" : ""}${settings.aa ? " · AA" : ""}`

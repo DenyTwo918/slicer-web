@@ -6,6 +6,7 @@ export interface SliceWorkerRequest {
   models: PipelineModel[];
   settings: PipelineSettings;
   printer: PipelinePrinter;
+  forceCpu?: boolean;
 }
 
 export interface SliceWorkerResponse {
@@ -14,6 +15,7 @@ export interface SliceWorkerResponse {
   error?: string;
   result?: SliceResult | null;
   supportMask?: Uint8Array[] | null;
+  engine?: "gpu" | "cpu";
 }
 
 /** Worker scope (typování bez konfliktu s dom lib) */
@@ -23,15 +25,15 @@ const ctx = self as unknown as {
 };
 
 ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
-  const { id, models, settings, printer } = ev.data;
+  const { id, models, settings, printer, forceCpu } = ev.data;
   try {
-    const { result, supportMask } = await runSlicePipeline(models, settings, printer);
+    const { result, supportMask, engine } = await runSlicePipeline(models, settings, printer, { forceCpu });
     // vrstvy a maska se přenesou bez kopie (transfer) — main thread je potřebuje,
     // worker po odeslání končí
     const transfer: Transferable[] = [];
     if (result) for (const l of result.layers) transfer.push(l.data.buffer);
     if (supportMask) for (const m of supportMask) transfer.push(m.buffer);
-    const resp: SliceWorkerResponse = { id, ok: true, result, supportMask };
+    const resp: SliceWorkerResponse = { id, ok: true, result, supportMask, engine };
     ctx.postMessage(resp, transfer);
   } catch (err) {
     const resp: SliceWorkerResponse = {

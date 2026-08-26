@@ -5,6 +5,7 @@ import { applyHollow } from "./hollow";
 import { applyRaft } from "./raft";
 import { applyAA } from "./aa";
 import { initNative } from "./native";
+import { gpuSlice } from "./gpuSlice";
 
 /** Model pro pipeline — jen data, která slicing potřebuje (posílá se do workera). */
 export interface PipelineModel {
@@ -41,6 +42,8 @@ export interface PipelinePrinter {
 export interface PipelineResult {
   result: SliceResult | null;
   supportMask: Uint8Array[] | null;
+  /** Který slicing engine běžel */
+  engine: "gpu" | "cpu";
 }
 
 /** Měřítko pro slicovací rastr — vždy dělí rozlišení tiskárny beze zbytku.
@@ -61,11 +64,11 @@ export function sliceScale(resX: number, resY: number): number {
 export async function runSlicePipeline(
   models: PipelineModel[],
   settings: PipelineSettings,
-  printer: PipelinePrinter
+  printer: PipelinePrinter,
+  opts?: { forceCpu?: boolean }
 ): Promise<PipelineResult> {
-  // zkus načíst WASM kernely (selhání = null, pak JS fallback)
   await initNative();
-  if (models.length === 0) return { result: null, supportMask: null };
+  if (models.length === 0) return { result: null, supportMask: null, engine: "cpu" };
   const scale = sliceScale(printer.resX, printer.resY);
   const sliceW = printer.resX / scale;
   const sliceH = printer.resY / scale;
@@ -73,36 +76,55 @@ export async function runSlicePipeline(
     x: printer.printX / sliceW,
     y: printer.printY / sliceH,
   };
+
+  // GPU slicing (WebGPU depth-based; hollow už aplikované) — jinak CPU fallback
   let result: SliceResult | null = null;
-  for (const m of models) {
-    const mesh = {
-      positions: m.positions,
-      bounds: m.bounds,
-      triangleCount: m.triangleCount,
-      normals: new Float32Array(0),
-    };
-    const s = sliceMesh(mesh, {
-      layerHeight: settings.layerHeight,
-      resolutionX: sliceW,
-      resolutionY: sliceH,
-      plateW: printer.printX,
-      plateH: printer.printY,
-      offsetX: m.tx,
-      offsetY: m.ty,
-    });
-    result = result ? unionSlices(result, s) : s;
-  }
-  if (result && settings.hollow) {
-    result = applyHollow(
-      result,
-      {
-        enabled: true,
+  let engine: "gpu" | "cpu" = "cpu";
+  const gpu = !opts?.forceCpu
+    ? await gpuSlice({
+        models,
+        layerHeight: settings.layerHeight,
+        hollow: settings.hollow,
         wallMm: settings.wallMm,
-        holeDiaMm: settings.holeDiaMm,
         drainHoles: settings.drainHoles,
-      },
-      mmPerPx
-    );
+        holeDiaMm: settings.holeDiaMm,
+        printer,
+      })
+    : null;
+  if (gpu) {
+    result = gpu;
+    engine = "gpu";
+  } else {
+    for (const m of models) {
+      const mesh = {
+        positions: m.positions,
+        bounds: m.bounds,
+        triangleCount: m.triangleCount,
+        normals: new Float32Array(0),
+      };
+      const s = sliceMesh(mesh, {
+        layerHeight: settings.layerHeight,
+        resolutionX: sliceW,
+        resolutionY: sliceH,
+        plateW: printer.printX,
+        plateH: printer.printY,
+        offsetX: m.tx,
+        offsetY: m.ty,
+      });
+      result = result ? unionSlices(result, s) : s;
+    }
+    if (result && settings.hollow) {
+      result = applyHollow(
+        result,
+        {
+          enabled: true,
+          wallMm: settings.wallMm,
+          holeDiaMm: settings.holeDiaMm,
+          drainHoles: settings.drainHoles,
+        },
+        mmPerPx
+      );
+    }
   }
   let supportMask: Uint8Array[] | null = null;
   const px = Math.min(mmPerPx.x, mmPerPx.y);
@@ -138,5 +160,5 @@ export async function runSlicePipeline(
   if (result && settings.aa) {
     result = applyAA(result);
   }
-  return { result, supportMask };
+  return { result, supportMask, engine };
 }
