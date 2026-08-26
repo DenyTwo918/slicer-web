@@ -100,19 +100,20 @@ function LayerPlane({
   );
 }
 
-/** Objem tisku — vrstvy jako 3D (raft, podpory i model). */
+/** Objem tisku — vrstvy jako 3D (raft, podpory i model).
+ *  Vykreslují se jen vrstvy pod aktuálním řezem (cutZ) — žádné clipping planes. */
 function PrintVolume({
   sliceResult,
   printer,
-  clipPlane,
+  cutZ,
 }: {
   sliceResult: { layers: { z: number; data: Uint8Array }[]; resolutionX: number; resolutionY: number } | null;
   printer: PrinterProfile;
-  clipPlane: THREE.Plane | null;
+  cutZ: number | null;
 }) {
   const quads = useMemo(() => {
     if (!sliceResult) return [];
-    const step = 3; // každá 3. vrstva (tenčí objem, méně textur)
+    const step = 3; // každá 3. vrstva
     const arr: { z: number; tex: THREE.CanvasTexture }[] = [];
     for (let i = 0; i < sliceResult.layers.length; i += step) {
       const l = sliceResult.layers[i];
@@ -130,30 +131,24 @@ function PrintVolume({
     };
   }, [quads]);
 
-  const below = useMemo(
-    () =>
-      clipPlane
-        ? new THREE.Plane(new THREE.Vector3(0, 0, 1), clipPlane.constant)
-        : null,
-    [clipPlane]
-  );
-
   return (
     <group>
-      {quads.map((q, idx) => (
-        <mesh key={idx} position={[0, 0, q.z]}>
-          <planeGeometry args={[printer.printX, printer.printY]} />
-          <meshBasicMaterial
-            map={q.tex}
-            color="#bfdbfe"
-            transparent
-            opacity={0.85}
-            depthWrite={false}
-            side={THREE.DoubleSide}
-            clippingPlanes={below ? [below] : undefined}
-          />
-        </mesh>
-      ))}
+      {quads.map((q, idx) => {
+        if (cutZ !== null && q.z > cutZ + 0.001) return null;
+        return (
+          <mesh key={idx} position={[0, 0, q.z]}>
+            <planeGeometry args={[printer.printX, printer.printY]} />
+            <meshBasicMaterial
+              map={q.tex}
+              color="#bfdbfe"
+              transparent
+              opacity={0.85}
+              depthWrite={false}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+        );
+      })}
     </group>
   );
 }
@@ -309,14 +304,6 @@ export default function Viewport({
   const orbitRef = useRef<any>(null);
   const [orbitEnabled, setOrbitEnabled] = useState(true);
   const rad2deg = (r: number) => (r * 180) / Math.PI;
-  // řezová rovina — model se krájí na aktuální vrstvě
-  const clipPlane = useMemo(
-    () =>
-      layerPreview
-        ? new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerPreview.z)
-        : null,
-    [layerPreview]
-  );
 
   const commitGizmo = () => {
     const g = gizmoRef.current;
@@ -372,9 +359,13 @@ export default function Viewport({
       <Vat printer={printer} />
       <LayerPlane preview={layerPreview ?? null} printer={printer} />
 
-      {/* náhled tisku: objem vrstev (raft + podpory + model) místo modelů */}
+      {/* náhled tisku: objem vrstev pod řezem (raft + podpory + model) */}
       {layerPreview ? (
-        <PrintVolume sliceResult={sliceResult ?? null} printer={printer} clipPlane={clipPlane} />
+        <PrintVolume
+          sliceResult={sliceResult ?? null}
+          printer={printer}
+          cutZ={layerPreview.z}
+        />
       ) : (
         models.map((m) => {
           let color = "#5b9cf6";
