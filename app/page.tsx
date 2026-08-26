@@ -755,10 +755,16 @@ export default function Home() {
       else if (e.key === "ArrowRight") nudgeSel(5, 0);
       else if (e.key === "ArrowUp") nudgeSel(0, 5);
       else if (e.key === "ArrowDown") nudgeSel(0, -5);
+      else if (e.key === "Escape" && sliceResult) {
+        setSliceResult(null);
+        setLastExport(null);
+      } else if (e.key === "Delete" && selectedId !== null) {
+        removeModel(selectedId);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [orientSel, doSlice, exportPm7, duplicateSel, centerSel, resetSel, printNow, mirrorSel, nudgeSel]);
+  }, [orientSel, doSlice, exportPm7, duplicateSel, centerSel, resetSel, printNow, mirrorSel, nudgeSel, sliceResult, removeModel]);
 
   return (
     <div className="page">
