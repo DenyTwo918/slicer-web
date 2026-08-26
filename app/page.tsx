@@ -162,7 +162,6 @@ export default function Home() {
 
   const [sliceResult, setSliceResult] = useState<SliceResult | null>(null);
   const [supportMask, setSupportMask] = useState<Uint8Array[] | null>(null);
-  const [lastEngine, setLastEngine] = useState<"gpu" | "cpu" | null>(null);
   const [sliceIdx, setSliceIdx] = useState(0);
   const [slicing, setSlicing] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -537,7 +536,6 @@ const doSlice = useCallback(async () => {
     if (result) {
       setSliceResult(result);
       setSupportMask(sm);
-      setLastEngine(engine);
       setSliceIdx(0);
       if (typeof window !== "undefined") {
         // debug hook pro headless testy (hash + pixelové počty vzorků pro porovnání GPU/CPU)
@@ -1447,21 +1445,7 @@ const doSlice = useCallback(async () => {
         {sliceResult && (
           <div className="layer-bar">
             <div className="layer-bar-head">
-              <span>
-                Náhled tisku{" "}
-                {lastEngine && (
-                  <span
-                    className={`engine-badge ${lastEngine === "gpu" ? "engine-gpu" : "engine-cpu"}`}
-                    title={
-                      lastEngine === "gpu"
-                        ? "Slicováno na grafice (WebGPU depth)"
-                        : "Slicováno na CPU (WebGPU nedostupné)"
-                    }
-                  >
-                    {lastEngine === "gpu" ? "GPU" : "CPU"}
-                  </span>
-                )}
-              </span>
+              <span>Náhled tisku</span>
               <button
                 className="slice-close"
                 onClick={() => {

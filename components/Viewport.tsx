@@ -275,7 +275,13 @@ function Model({
     );
   }
 
-  // řez: spodní část plná, horní část = ghost (průsvitný)
+  // řez: spodní část plná, horní část = solid ghost (tmavší odstín, neprůhledný)
+  // → model vypadá jako plné těleso, podpory neprosvítají stěnami
+  const ghostColor = useMemo(() => {
+    const c = new THREE.Color(color);
+    c.multiplyScalar(0.62);
+    return "#" + c.getHexString();
+  }, [color]);
   return (
     <>
       <mesh geometry={geometry} castShadow receiveShadow>
@@ -288,12 +294,12 @@ function Model({
           clippingPlanes={[below!]}
         />
       </mesh>
-      <mesh geometry={geometry}>
+      <mesh geometry={geometry} castShadow receiveShadow>
         <meshStandardMaterial
-          color="#9fb4d8"
-          transparent
-          opacity={0.15}
-          depthWrite={false}
+          color={ghostColor}
+          metalness={0.2}
+          roughness={0.32}
+          envMapIntensity={0.9}
           side={THREE.DoubleSide}
           clippingPlanes={[above!]}
         />
