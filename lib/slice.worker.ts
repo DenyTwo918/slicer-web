@@ -28,12 +28,14 @@ export interface SliceWorkerRequest {
 export interface SliceWorkerResponse {
   id: number;
   ok: boolean;
-  kind?: "slice" | "exportFull";
+  kind?: "slice" | "exportFull" | "exportFull-progress";
   error?: string;
   result?: SliceResult | null;
   supportMask?: Uint8Array[] | null;
   engine?: "gpu" | "cpu";
   bytes?: Uint8Array;
+  done?: number;
+  total?: number;
 }
 
 /** Worker scope (typování bez konfliktu s dom lib) */
@@ -54,7 +56,14 @@ ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
         settings,
         printer,
         models,
-        { ...(exposures ?? {}), previewSlice: null, previews: previews ?? null }
+        {
+          ...(exposures ?? {}),
+          previewSlice: null,
+          previews: previews ?? null,
+          onProgress: (done, total) => {
+            ctx.postMessage({ id, ok: true, kind: "exportFull-progress", done, total });
+          },
+        }
       );
       const bytes = res.bytes;
       ctx.postMessage({ id, ok: true, kind: "exportFull", bytes }, [bytes.buffer]);

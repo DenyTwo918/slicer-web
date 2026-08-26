@@ -75,8 +75,6 @@ interface SliceSettings {
   supportMaxAngleDeg: number;
   supportSpacingMm: number;
   supportClearanceMm: number;
-  /** full-res 12K streaming export (pomalé, ale nativní rozlišení) */
-  fullResExport: boolean;
 }
 
 const DEFAULT_SETTINGS: SliceSettings = {
@@ -102,7 +100,6 @@ const DEFAULT_SETTINGS: SliceSettings = {
   supportMaxAngleDeg: 35,
   supportSpacingMm: 8,
   supportClearanceMm: 1,
-  fullResExport: false,
 };
 
 const SLOT_OFFSETS: [number, number][] = [
@@ -174,6 +171,7 @@ export default function Home() {
   const [sliceIdx, setSliceIdx] = useState(0);
   const [slicing, setSlicing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [lastExport, setLastExport] = useState<{ bytes: Uint8Array; name: string } | null>(null);
   const [exportName, setExportName] = useState("tisk");
@@ -503,7 +501,7 @@ async function genPreviewBytes(
 }
 
 /** Full-res (12K) streaming export ve workeru. */
-async function exportFullInWorker(
+function exportFullInWorker(
   models: ModelItem[],
   settings: SliceSettings,
   printer: PrinterProfile,
@@ -517,7 +515,8 @@ async function exportFullInWorker(
     zupSpeed: number;
     printTimeS: number;
   },
-  previews: [Uint8Array, Uint8Array]
+  previews: [Uint8Array, Uint8Array],
+  onProgress: (done: number, total: number) => void
 ): Promise<Uint8Array> {
   const worker = getSliceWorker();
   const id = ++sliceSeq;
@@ -525,6 +524,12 @@ async function exportFullInWorker(
     const handler = (ev: MessageEvent<SliceWorkerResponse>) => {
       const msg = ev.data;
       if (msg.id !== id) return;
+      if (msg.kind === "exportFull-progress") {
+        if (typeof msg.done === "number" && typeof msg.total === "number") {
+          onProgress(msg.done, msg.total);
+        }
+        return; // progress nezavírá handler
+      }
       worker.removeEventListener("message", handler);
       if (msg.ok && msg.bytes) resolve(msg.bytes);
       else reject(new Error(msg.error ?? "Full-res export selhal."));
@@ -710,19 +715,19 @@ const doSlice = useCallback(async () => {
 
   const buildExport = useCallback(async (): Promise<{ bytes: Uint8Array; name: string } | null> => {
     if (!sliceResult || models.length === 0) return null;
-    let bytes: Uint8Array;
-    if (settings.fullResExport) {
-      // full-res 12K streaming export ve workeru (náhledy generuje hlavní vlákno)
-      const previews = await Promise.all([
-        genPreviewBytes(sliceResult, 0, 224, 168),
-        genPreviewBytes(
-          sliceResult,
-          Math.max(1, Math.floor(sliceResult.layers.length / 2)),
-          224,
-          168
-        ),
-      ]);
-      bytes = await exportFullInWorker(models, settings, printer, {
+    // náhledová PNG (generuje hlavní vlákno z canvasu)
+    const previews = await Promise.all([
+      genPreviewBytes(sliceResult, 0, 224, 168),
+      genPreviewBytes(
+        sliceResult,
+        Math.max(1, Math.floor(sliceResult.layers.length / 2)),
+        224,
+        168
+      ),
+    ]);
+    // export VŽDY v nativním rozlišení tiskárny (full-res streaming ve workeru)
+    try {
+      const bytes = await exportFullInWorker(models, settings, printer, {
         bottomExposure: settings.bottomExposure,
         normalExposure: settings.normalExposure,
         bottomLayers: settings.bottomLayers,
@@ -731,9 +736,15 @@ const doSlice = useCallback(async () => {
         zupHeight: settings.zupHeight,
         zupSpeed: settings.zupSpeed,
         printTimeS: estPrintTime,
-      }, previews);
-    } else {
-      bytes = await buildPm7(
+      }, previews, (done, total) => {
+        setExportProgress(`${done}/${total}`);
+      });
+      setExportProgress(null);
+      return { bytes, name: `${exportName}.${printer.keySuffix}` };
+    } catch (e) {
+      setExportProgress(null);
+      showToast("err", "Full-res export selhal → záložně v náhledovém rozlišení.", 6000);
+      const bytes = await buildPm7(
         models.map((m) => applyTransform(m.mesh, m.transform)),
         sliceResult,
         {
@@ -748,8 +759,8 @@ const doSlice = useCallback(async () => {
           printTimeS: estPrintTime,
         }
       );
+      return { bytes, name: `${exportName}.${printer.keySuffix}` };
     }
-    return { bytes, name: `${exportName}.${printer.keySuffix}` };
   }, [sliceResult, models, settings, printer, exportName, estPrintTime]);
 
   const exportPm7 = useCallback(async () => {
@@ -1262,10 +1273,13 @@ const doSlice = useCallback(async () => {
               className="btn btn-small btn-ghost fab-usb"
               onClick={exportPm7}
               disabled={exporting}
-              title="Uložit soubor na USB (stažení .pm7)"
+              title={`Uložit soubor na USB (stažení .pm7 v nativním ${printer.resX}×${printer.resY})`}
             >
               {exporting ? "…" : "USB"}
             </button>
+            {exportProgress && (
+              <div className="fab-progress">12K export {exportProgress}</div>
+            )}
           </div>
         )}
 
@@ -1319,14 +1333,6 @@ const doSlice = useCallback(async () => {
                   setExportName(e.target.value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12))
                 }
               />
-            </label>
-            <label className="set-row check" title="Export v nativním 11520×5120 — pomalé (minuty), ale plný detail. Vyžaduje slicování před exportem.">
-              <input
-                type="checkbox"
-                checked={settings.fullResExport}
-                onChange={(e) => setSettings((s) => ({ ...s, fullResExport: e.target.checked }))}
-              />
-              <span>Full-res 12K export</span>
             </label>
             <details open>
               <summary>Základní</summary>
