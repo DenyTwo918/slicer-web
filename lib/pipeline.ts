@@ -6,6 +6,7 @@ import { applyRaft } from "./raft";
 import { applyAA } from "./aa";
 import { initNative } from "./native";
 import { gpuSlice } from "./gpuSlice";
+import { detectSupportAnchors } from "./supportDetect";
 
 /** Model pro pipeline — jen data, která slicing potřebuje (posílá se do workera). */
 export interface PipelineModel {
@@ -129,11 +130,22 @@ export async function runSlicePipeline(
   let supportMask: Uint8Array[] | null = null;
   const px = Math.min(mmPerPx.x, mmPerPx.y);
   if (result && settings.supports) {
+    // kotvy podpor z meshí (úhlová detekce) — podpírá se jen skutečný podhled
+    let minZ = Infinity;
+    for (const m of models) minZ = Math.min(minZ, m.bounds.min[2]);
+    const anchors = detectSupportAnchors(models, {
+      layerHeight: settings.layerHeight,
+      minZ,
+      resX: sliceW,
+      resY: sliceH,
+      printX: printer.printX,
+      printY: printer.printY,
+    });
     const sr = generateSupports(result, {
       enabled: true,
       radiusPx: Math.max(2, Math.round(settings.supportRadiusMm / px)),
       tipPx: Math.max(1, Math.round(settings.supportTipMm / px)),
-    });
+    }, anchors);
     result = sr.result;
     supportMask = sr.mask;
   }

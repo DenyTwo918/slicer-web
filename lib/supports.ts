@@ -135,13 +135,15 @@ export interface SupportResult {
 }
 
 /**
- * Automatické podpory: najde "přesahy" (pixely, které v předchozí vrstvě
- * nebyly pokryté) a ostrůvky a podepře je sloupem od desky nahoru.
+ * Automatické podpory: sloupy od desky ke kotvám (přesahy detekované
+ * z meshí — viz lib/supportDetect.ts; kotvy jsou mimo model a sloupy se
+ * plní JEN do prázdného prostoru, takže neprocházejí stěnami).
  * Vrací i masku přidaných pixelů (pro 3D zobrazení podpor zvlášť).
  */
 export function generateSupports(
   slice: SliceResult,
-  opts: SupportOptions
+  opts: SupportOptions,
+  anchors?: { x: number; y: number; layer: number }[]
 ): SupportResult {
   if (!opts.enabled) {
     return {
@@ -162,17 +164,26 @@ export function generateSupports(
 
   const pillars: { x: number; y: number; top: number }[] = [];
 
-  for (let i = 1; i < N; i++) {
-    const cur = layers[i];
-    const prevDil = dilate(layers[i - 1], W, H, overhangPx);
-    // přesahové pixely: on tady, nebyl pod tím (dilatovaně)
-    const oh = new Uint8Array(W * H);
-    for (let p = 0; p < W * H; p++) {
-      oh[p] = cur[p] && !prevDil[p] ? 1 : 0;
+  if (anchors) {
+    // moderní cesta: kotvy z meshí (úhlová detekce) — žádný pixel-šum
+    for (const a of anchors) {
+      if (a.x < 0 || a.y < 0 || a.x >= W || a.y >= H) continue;
+      pillars.push({ x: a.x, y: a.y, top: Math.min(Math.max(0, a.layer), N - 1) });
     }
-    const comps = components(oh, W, H, minSize);
-    for (const c of comps) {
-      pillars.push({ x: c.x, y: c.y, top: i });
+  } else {
+    // fallback (testy/stará cesta): pixel-diff přesahy + ostrůvky
+    for (let i = 1; i < N; i++) {
+      const cur = layers[i];
+      const prevDil = dilate(layers[i - 1], W, H, overhangPx);
+      // přesahové pixely: on tady, nebyl pod tím (dilatovaně)
+      const oh = new Uint8Array(W * H);
+      for (let p = 0; p < W * H; p++) {
+        oh[p] = cur[p] && !prevDil[p] ? 1 : 0;
+      }
+      const comps = components(oh, W, H, minSize);
+      for (const c of comps) {
+        pillars.push({ x: c.x, y: c.y, top: i });
+      }
     }
   }
 
