@@ -2,7 +2,13 @@ import type { PipelineModel } from "./pipeline";
 import type { PipelineSettings } from "./pipeline";
 import type { PrinterProfile } from "./profiles";
 import type { SliceResult } from "./slice";
-import { initNative, nativeReady, fullDepthRegion, fillBetween16Z } from "./native";
+import {
+  initNative,
+  nativeReady,
+  fullDepthRegion,
+  fillBetween16Z,
+  wasmDilate,
+} from "./native";
 import { detectSupportAnchors } from "./supportDetect";
 import { routeSupportTraces, type PillarCtx } from "./supports";
 import {
@@ -166,11 +172,27 @@ export async function buildPm7FullRes(
     throw new Error("Full-res rasterizace neproběhla správně (prázdné depth mapy).");
   }
 
-  // 2) podpory: kotvy + routing na slicovacím rozlišení, pak přenásobit
-  const scale = 16; // printer.resX % 16 === 0 → 1/16 (stejná logika jako pipeline)
+  // 2) podpory + raft na slicovacím rozlišení (downsampled depth z full-res).
+  //    Jednotná logika s náhledem: stejné kotvy, stejný routing, stejný raft.
+  const scale = resX % 16 === 0 ? 16 : resX % 8 === 0 ? 8 : 1;
   const sliceW = resX / scale;
   const sliceH = resY / scale;
   const pxPerMmSlice = printer.printX / sliceW;
+  const sn = sliceW * sliceH;
+  const sFront = new Uint16Array(sn);
+  const sBack = new Uint16Array(sn);
+  for (let y = 0; y < sliceH; y++) {
+    const sy = Math.min(resY - 1, y * scale + (scale >> 1));
+    for (let x = 0; x < sliceW; x++) {
+      const sx = Math.min(resX - 1, x * scale + (scale >> 1));
+      const si = y * sliceW + x;
+      sFront[si] = depth.front[sy * resX + sx];
+      sBack[si] = depth.back[sy * resX + sx];
+    }
+  }
+  // kvantovaná výška vrstvy li — stejná kScale jako full-res (lineární v z)
+  const layerZQ: number[] = [];
+  for (let i = 0; i < numLayers; i++) layerZQ.push((0.05 + i * settings.layerHeight) * kScale);
 
   let traces: { li: number; x: number; y: number; tip: boolean }[][] = [];
   if (settings.supports) {
@@ -188,20 +210,6 @@ export async function buildPm7FullRes(
     });
     const radiusPx = Math.max(2, Math.round(settings.supportRadiusMm / pxPerMmSlice));
     const tipPx = Math.max(1, Math.round(settings.supportTipMm / pxPerMmSlice));
-    // modelAt přes downsampled depth mapy (kotvy/routing v mm prostoru sedí)
-    const sFront = new Uint16Array(sliceW * sliceH);
-    const sBack = new Uint16Array(sliceW * sliceH);
-    for (let y = 0; y < sliceH; y++) {
-      const sy = Math.min(resY - 1, y * scale + (scale >> 1));
-      for (let x = 0; x < sliceW; x++) {
-        const sx = Math.min(resX - 1, x * scale + (scale >> 1));
-        sFront[y * sliceW + x] = depth.front[sy * resX + sx];
-        sBack[y * sliceW + x] = depth.back[sy * resX + sx];
-      }
-    }
-    // kvantovaná výška vrstvy li v slice rastru — stejná kScale (kvantizace je lineární v z)
-    const layerZQ: number[] = [];
-    for (let i = 0; i < numLayers; i++) layerZQ.push((0.05 + i * settings.layerHeight) * kScale);
     const frCtx: PillarCtx = {
       N: numLayers,
       modelAt: (li, x, y) => {
@@ -212,6 +220,18 @@ export async function buildPm7FullRes(
       fill: () => {},
     };
     traces = routeSupportTraces(anchors, frCtx, radiusPx, tipPx, sliceW, sliceH);
+  }
+
+  // raft footprint: model na vrstvě 0 (slice res) → dilatace o margin
+  let raftMask: Uint8Array | null = null;
+  if (settings.raft && settings.raftLayers > 0) {
+    const zq0 = layerZQ[0];
+    const footprint = new Uint8Array(sn);
+    for (let i = 0; i < sn; i++) {
+      if (sFront[i] < zq0 && zq0 < sBack[i]) footprint[i] = 1;
+    }
+    const marginPx = Math.max(1, Math.round(settings.raftMarginMm / pxPerMmSlice));
+    raftMask = wasmDilate(footprint, sliceW, sliceH, marginPx);
   }
 
   const bottomExposure = opts.bottomExposure ?? 25;
@@ -225,29 +245,64 @@ export async function buildPm7FullRes(
   const hollowWallQ = settings.hollow ? settings.wallMm * kScale : 0;
   const solidBase = settings.hollow ? Math.max(1, Math.floor(numLayers * 0.02)) : 0;
 
-  // podpory: trasy podle vrstev — [vrstva] → seznam (x,y,r) ve full-res px
+  // odvodňovací otvory (full-res replikace carveEdgeHole z hollow.ts)
+  const holeR =
+    settings.hollow && settings.drainHoles
+      ? Math.max(1, Math.round(settings.holeDiaMm / 2 / pxMm))
+      : 0;
+  const holeBottom = holeR > 0 ? Math.max(0, Math.floor(numLayers * 0.05)) : -1;
+  const holeTop = holeR > 0 ? Math.max(0, Math.floor(numLayers * 0.85)) : -1;
+
+  // trasy podpor podle vrstev — [vrstva] → seznam (x,y,r) ve full-res px
+  const radiusFull = Math.max(2, Math.round(settings.supportRadiusMm / pxPerMmSlice)) * scale;
+  const tipFull = Math.max(1, Math.round(settings.supportTipMm / pxPerMmSlice)) * scale;
   const pillarsByLayer: Map<number, { x: number; y: number; r: number }[]> = new Map();
   for (const trace of traces) {
     for (let k = 0; k < trace.length; k++) {
       const seg = trace[k];
-      const r = (seg.tip ? Math.max(1, Math.round(settings.supportTipMm / pxPerMmSlice)) : Math.max(2, Math.round(settings.supportRadiusMm / pxPerMmSlice))) * scale;
       const li = seg.li;
       const arr = pillarsByLayer.get(li) ?? [];
-      arr.push({ x: seg.x * scale, y: seg.y * scale, r });
+      arr.push({
+        x: seg.x * scale,
+        y: seg.y * scale,
+        r: seg.tip ? tipFull : radiusFull,
+      });
       pillarsByLayer.set(li, arr);
-      // propojit sousední vrstvy tras (úhyb = plynulý most)
+      // propojit mezery mezi trasovanými vrstvami (plynulý most)
       if (k > 0) {
         const prev = trace[k - 1];
         const gap = seg.li - prev.li;
-        if (gap > 1) {
-          const steps = gap - 1;
-          for (let s = 1; s < steps; s++) {
-            const f = s / steps;
-            const ix = Math.round((prev.x + (seg.x - prev.x) * f) * scale);
-            const iy = Math.round((prev.y + (seg.y - prev.y) * f) * scale);
-            const arrI = pillarsByLayer.get(prev.li + s) ?? [];
-            arrI.push({ x: ix, y: iy, r });
-            pillarsByLayer.set(prev.li + s, arrI);
+        for (let s = 1; s < gap; s++) {
+          const f = s / gap;
+          const arrI = pillarsByLayer.get(prev.li + s) ?? [];
+          arrI.push({
+            x: Math.round((prev.x + (seg.x - prev.x) * f) * scale),
+            y: Math.round((prev.y + (seg.y - prev.y) * f) * scale),
+            r: radiusFull,
+          });
+          pillarsByLayer.set(prev.li + s, arrI);
+        }
+      }
+    }
+  }
+
+  // raft pixelové souřadnice (full-res) předpočítané jednou
+  let raftPixels: { x: number; y: number }[][] | null = null;
+  if (raftMask) {
+    raftPixels = [];
+    const marginLayers = Math.min(settings.raftLayers, numLayers);
+    for (let i = 0; i < marginLayers; i++) raftPixels.push([]);
+    for (let sy = 0; sy < sliceH; sy++) {
+      for (let sx2 = 0; sx2 < sliceW; sx2++) {
+        if (!raftMask[sy * sliceW + sx2]) continue;
+        const fx = sx2 * scale;
+        const fy = sy * scale;
+        for (let i = 0; i < marginLayers; i++) {
+          const arr = raftPixels[i];
+          for (let dy = 0; dy < scale; dy++) {
+            for (let dx = 0; dx < scale; dx++) {
+              arr.push({ x: fx + dx, y: fy + dy });
+            }
           }
         }
       }
@@ -278,7 +333,13 @@ export async function buildPm7FullRes(
     const wallq = i < solidBase ? 0 : hollowWallQ;
     const res = fillBetween16Z(zq, wallq, resX, resY);
 
-    // podpory do bitmapy (přeskočit pixely modelu)
+    let count = res.count;
+    let minX = res.minX;
+    let maxX = res.maxX;
+    let minY = res.minY;
+    let maxY = res.maxY;
+
+    // podpory z tras (kruhy, přeskočit pixely modelu)
     const pil = pillarsByLayer.get(i);
     if (pil) {
       for (const c of pil) {
@@ -288,25 +349,75 @@ export async function buildPm7FullRes(
         const y0 = Math.max(0, c.y - c.r);
         const y1 = Math.min(resY - 1, c.y + c.r);
         for (let yy = y0; yy <= y1; yy++) {
+          const rowF = yy * resX;
           for (let xx = x0; xx <= x1; xx++) {
+            const idx = rowF + xx;
+            if (res.data[idx]) continue; // model má přednost
             const dx = xx - c.x;
             const dy = yy - c.y;
-            if (dx * dx + dy * dy <= r2 && !res.data[yy * resX + xx]) res.data[yy * resX + xx] = 255;
+            if (dx * dx + dy * dy <= r2 && !(depth.front[idx] < zq && zq < depth.back[idx])) {
+              res.data[idx] = 255;
+              count++;
+            }
           }
         }
       }
-      // přepočet statistik po přidání podpor (jen count — bbox necháme, podpory
-      // jsou vždy uvnitř/model blízko; přesnost scene.slice metadata není kritická)
     }
 
-    const areaMm2 = res.count * pxMm * pyMm;
+    // raft (prvních N vrstev)
+    if (raftPixels && i < raftPixels.length) {
+      const rp = raftPixels[i];
+      for (let k = 0; k < rp.length; k++) {
+        const idx = rp[k].y * resX + rp[k].x;
+        if (!res.data[idx] && !(depth.front[idx] < zq && zq < depth.back[idx])) {
+          res.data[idx] = 255;
+          count++;
+        }
+      }
+    }
+
+    // odvodňovací otvory — najdi pravý okraj a vyřízni kruh
+    if (i === holeBottom || i === holeTop) {
+      if (count > 0 || maxX >= 0) {
+        let mx = -1;
+        let my = -1;
+        for (let yy = 0; yy < resY; yy++) {
+          for (let xx = resX - 1; xx >= 0; xx--) {
+            if (res.data[yy * resX + xx]) {
+              if (xx > mx) {
+                mx = xx;
+                my = yy;
+              }
+              break;
+            }
+          }
+        }
+        if (mx >= 0) {
+          const r2 = holeR * holeR;
+          const x0 = Math.max(0, mx - holeR);
+          const x1 = Math.min(resX - 1, mx + holeR);
+          const y0 = Math.max(0, my - holeR);
+          const y1 = Math.min(resY - 1, my + holeR);
+          for (let yy = y0; yy <= y1; yy++) {
+            for (let xx = x0; xx <= x1; xx++) {
+              const ddx = xx - mx;
+              const ddy = yy - my;
+              if (ddx * ddx + ddy * ddy <= r2) res.data[yy * resX + xx] = 0;
+            }
+          }
+          count = Math.max(0, count - Math.round(Math.PI * holeR * holeR * 0.5));
+        }
+      }
+    }
+
+    const areaMm2 = count * pxMm * pyMm;
     layerInfo.push({
       z: zRel,
       areaMm2,
-      x0: res.count === 0 ? 0 : res.minX * pxMm,
-      y0: res.count === 0 ? 0 : res.minY * pyMm,
-      x1: res.count === 0 ? 0 : (res.maxX + 1) * pxMm,
-      y1: res.count === 0 ? 0 : (res.maxY + 1) * pyMm,
+      x0: count === 0 ? 0 : minX * pxMm,
+      y0: count === 0 ? 0 : minY * pyMm,
+      x1: count === 0 ? 0 : (maxX + 1) * pxMm,
+      y1: count === 0 ? 0 : (maxY + 1) * pyMm,
     });
 
     files[`layer_images/layer_${i}.pw0Img`] = encodeLayerToMachineInternal(

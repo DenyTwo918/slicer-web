@@ -298,9 +298,12 @@ function routePillar(
   ];
   let cx = ax;
   let cy = ay;
+  // rovná zóna pod špičkou: sloup zůstává přesně pod kontaktem s modelem,
+  // ať „nepodklouzne" od podhledu, který má držet
+  const straightZone = Math.max(3, radius);
   for (let li = Math.min(topLayer - 1, N - 1); li >= 0; li--) {
-    // 1) spojení se kmenem?
-    const t = nearestTrunk(li, cx, cy);
+    // 1) spojení se kmenem? (až mimo rovnou zónu pod špičkou)
+    const t = li <= topLayer - straightZone ? nearestTrunk(li, cx, cy) : null;
     if (t && t.d <= mergeDistPx) {
       trace.push({ li, x: cx, y: cy, tip: false });
       if (trunks) {
@@ -335,15 +338,11 @@ function routePillar(
       continue;
     }
 
-    // 3) volno → skláněj se ke kmenu (pokud je dosažitelný), jinak rovně
-    if (t && t.d <= mergeDistPx + li * 2) {
-      // dosažitelnost: zbylých `li` vrstev × max 2 px/vrstvu
-      const dx = t.x - cx;
-      const dy = t.y - cy;
-      const len = Math.hypot(dx, dy) || 1;
-      const step = Math.min(2, len);
-      const nx = cx + Math.round((dx / len) * step);
-      const ny = cy + Math.round((dy / len) * step);
+    // 3) volno → skláněj se ke kmenu (max 1 px/vrstvu ≈ šikmý most),
+    //    jen pokud kmen dosáhne dřív, než sloup dojde k desce
+    if (t && t.d <= mergeDistPx + li * 1) {
+      const nx = cx + Math.sign(t.x - cx);
+      const ny = cy + Math.sign(t.y - cy);
       if (!blockedAt(li, nx, ny, radius)) {
         cx = nx;
         cy = ny;
