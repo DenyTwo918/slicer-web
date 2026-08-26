@@ -536,7 +536,8 @@ const doSlice = useCallback(async () => {
     if (result) {
       setSliceResult(result);
       setSupportMask(sm);
-      setSliceIdx(0);
+      // začni od horní vrstvy → model je v 3D vidět celý, tahem slideru dolů vidíš řez
+      setSliceIdx(Math.max(0, result.layers.length - 1));
       if (typeof window !== "undefined") {
         // debug hook pro headless testy (hash + pixelové počty vzorků pro porovnání GPU/CPU)
         const fnv = (a: Uint8Array, h: number) => {
