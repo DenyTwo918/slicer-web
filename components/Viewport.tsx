@@ -9,7 +9,7 @@ import {
   Environment,
   ContactShadows,
 } from "@react-three/drei";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { StlMesh } from "@/lib/stl";
 import type { ModelTransform } from "@/lib/transform";
@@ -179,13 +179,16 @@ export default function Viewport({
   layerPreview?: LayerPreviewData | null;
   gizmoMode?: "translate" | "rotate" | "scale";
 }) {
-  const selectedRef = useRef<THREE.Group>(null);
+  const activeRef = useRef<THREE.Group | null>(null);
+  const setActive = useCallback((node: THREE.Group | null) => {
+    activeRef.current = node;
+  }, []);
   const orbitRef = useRef<any>(null);
   const [orbitEnabled, setOrbitEnabled] = useState(true);
   const rad2deg = (r: number) => (r * 180) / Math.PI;
 
   const commitGizmo = () => {
-    const g = selectedRef.current;
+    const g = activeRef.current;
     if (!g) return;
     if (gizmoMode === "translate") {
       onMove(selectedId!, g.position.x, g.position.y);
@@ -237,13 +240,23 @@ export default function Viewport({
         let color = "#5b9cf6";
         if (m.id === selectedId) color = "#f5a524";
         else if (!m.fits) color = "#ef4444";
+        const isSel = m.id === selectedId;
+        const h = m.mesh.bounds.max[2] - m.mesh.bounds.min[2];
         return (
           <group
             key={m.id}
-            ref={m.id === selectedId ? selectedRef : undefined}
+            ref={isSel && gizmoMode === "translate" ? setActive : undefined}
             position={[m.transform.x, m.transform.y, 0]}
           >
-            <Model mesh={m.mesh} color={color} />
+            {/* pivot ve středu modelu — rotace/škálování kolem něj */}
+            <group
+              ref={isSel && gizmoMode !== "translate" ? setActive : undefined}
+              position={[0, 0, h / 2]}
+            >
+              <group position={[0, 0, -h / 2]}>
+                <Model mesh={m.mesh} color={color} />
+              </group>
+            </group>
           </group>
         );
       })}
@@ -259,12 +272,12 @@ export default function Viewport({
 
       {selectedId !== null && (
         <TransformControls
-          object={selectedRef as any}
+          object={activeRef as any}
           mode={gizmoMode}
           size={0.9}
           onObjectChange={() => {
-            if (gizmoMode === "translate" && selectedRef.current) {
-              const p = selectedRef.current.position;
+            if (gizmoMode === "translate" && activeRef.current) {
+              const p = activeRef.current.position;
               onMove(selectedId, p.x, p.y);
             }
           }}
