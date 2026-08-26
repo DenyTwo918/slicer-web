@@ -249,14 +249,15 @@ function Model({
     return g;
   }, [mesh]);
 
-  // POZOR: všechny hooky musí běžet vždy (bez podmínek) — jinak React #310
+  // POZOR: THREE drží poloprostor normal·p + constant >= 0.
+  // solid = POD řezem (z <= layerZ), ghost = NAD řezem (z >= layerZ)
   const layerZ = clipPlane ? -clipPlane.constant : 0;
   const below = useMemo(
-    () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerZ) : null),
+    () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, -1), layerZ) : null),
     [clipPlane, layerZ]
   );
   const above = useMemo(
-    () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, -1), layerZ) : null),
+    () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerZ) : null),
     [clipPlane, layerZ]
   );
 
