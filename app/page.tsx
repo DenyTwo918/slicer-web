@@ -72,6 +72,9 @@ interface SliceSettings {
   zupSpeedBottom: number;
   supportRadiusMm: number;
   supportTipMm: number;
+  supportMaxAngleDeg: number;
+  supportSpacingMm: number;
+  supportClearanceMm: number;
 }
 
 const DEFAULT_SETTINGS: SliceSettings = {
@@ -94,6 +97,9 @@ const DEFAULT_SETTINGS: SliceSettings = {
   zupSpeedBottom: 0.5,
   supportRadiusMm: 1.0,
   supportTipMm: 0.5,
+  supportMaxAngleDeg: 35,
+  supportSpacingMm: 8,
+  supportClearanceMm: 1,
 };
 
 const SLOT_OFFSETS: [number, number][] = [
@@ -487,6 +493,9 @@ function sliceInWorker(
       supports: settings.supports,
       supportRadiusMm: settings.supportRadiusMm,
       supportTipMm: settings.supportTipMm,
+      supportMaxAngleDeg: settings.supportMaxAngleDeg,
+      supportSpacingMm: settings.supportSpacingMm,
+      supportClearanceMm: settings.supportClearanceMm,
       raft: settings.raft,
       raftLayers: settings.raftLayers,
       raftMarginMm: settings.raftMarginMm,
@@ -969,6 +978,39 @@ const doSlice = useCallback(async () => {
                     onChange={(e) => setSettings((s) => ({ ...s, supportTipMm: Number(e.target.value) }))}
                   />
                 </label>
+                <label className="set-row">
+                  <span>Max úhel podhledu (°)</span>
+                  <input
+                    type="number"
+                    step={5}
+                    min={10}
+                    max={80}
+                    value={settings.supportMaxAngleDeg}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportMaxAngleDeg: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Rozestup (mm)</span>
+                  <input
+                    type="number"
+                    step={1}
+                    min={3}
+                    max={20}
+                    value={settings.supportSpacingMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportSpacingMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Min. výška od desky (mm)</span>
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={0}
+                    max={5}
+                    value={settings.supportClearanceMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportClearanceMm: Number(e.target.value) }))}
+                  />
+                </label>
               </>
             )}
           </SideSec>
@@ -1226,6 +1268,39 @@ const doSlice = useCallback(async () => {
                     min={0.2}
                     value={settings.supportTipMm}
                     onChange={(e) => setSettings((s) => ({ ...s, supportTipMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Max úhel podhledu (°)</span>
+                  <input
+                    type="number"
+                    step={5}
+                    min={10}
+                    max={80}
+                    value={settings.supportMaxAngleDeg}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportMaxAngleDeg: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Rozestup (mm)</span>
+                  <input
+                    type="number"
+                    step={1}
+                    min={3}
+                    max={20}
+                    value={settings.supportSpacingMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportSpacingMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Min. výška od desky (mm)</span>
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={0}
+                    max={5}
+                    value={settings.supportClearanceMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportClearanceMm: Number(e.target.value) }))}
                   />
                 </label>
               </>

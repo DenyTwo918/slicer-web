@@ -46,9 +46,10 @@ export function detectSupportAnchors(
   },
   opts?: AnchorOptions
 ): SupportAnchor[] {
-  const maxAngle = ((opts?.maxAngleDeg ?? 35) * Math.PI) / 180;
-  const spacingMm = opts?.spacingMm ?? 8;
-  const clearanceMm = opts?.clearanceMm ?? 1;
+  const fin = (v: number | undefined, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+  const maxAngle = ((fin(opts?.maxAngleDeg, 35)) * Math.PI) / 180;
+  const spacingMm = fin(opts?.spacingMm, 8);
+  const clearanceMm = fin(opts?.clearanceMm, 1);
   const { layerHeight, minZ, resX, resY, printX, printY } = sliceInfo;
   if (models.length === 0) return [];
 

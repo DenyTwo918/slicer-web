@@ -27,6 +27,12 @@ export interface PipelineSettings {
   supports: boolean;
   supportRadiusMm: number;
   supportTipMm: number;
+  /** max úhel podhledu od svislice (°) — podpírá se jen pod touto hodnotou */
+  supportMaxAngleDeg?: number;
+  /** rozestup kotev na desce (mm) */
+  supportSpacingMm?: number;
+  /** min výška kotvy nad deskou (mm) */
+  supportClearanceMm?: number;
   raft: boolean;
   raftLayers: number;
   raftMarginMm: number;
@@ -140,6 +146,10 @@ export async function runSlicePipeline(
       resY: sliceH,
       printX: printer.printX,
       printY: printer.printY,
+    }, {
+      maxAngleDeg: settings.supportMaxAngleDeg,
+      spacingMm: settings.supportSpacingMm,
+      clearanceMm: settings.supportClearanceMm,
     });
     const sr = generateSupports(result, {
       enabled: true,
