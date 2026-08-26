@@ -192,6 +192,86 @@ header {
   font-size: 18px;
 }
 
+/* ---------- levý navigační panel ---------- */
+.side-panel {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  bottom: 14px;
+  z-index: 6;
+  width: 232px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+.side-title {
+  font-weight: 800;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+.side-empty {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.side-models {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.side-model {
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+.side-model.active {
+  border-color: var(--blue);
+}
+.side-sec {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.side-sec-head {
+  width: 100%;
+  background: var(--card2);
+  border: none;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 9px 12px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.side-sec-head:hover {
+  background: #263041;
+}
+.side-caret {
+  color: var(--muted);
+}
+.side-sec-body {
+  padding: 8px 10px;
+}
+.side-actions {
+  margin-top: auto;
+  padding-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 /* ---------- nástrojová lišta ---------- */
 .toolbar {
   position: absolute;

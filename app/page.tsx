@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Viewport from "@/components/Viewport";
 import { parseStl, type StlMesh } from "@/lib/stl";
 import { parseObj } from "@/lib/obj";
@@ -118,6 +118,29 @@ function sliceScale(resX: number, resY: number): number {
 
 let nextId = 1;
 
+/** Akordeon sekce levé navigace. */
+function SideSec({
+  label,
+  open,
+  onToggle,
+  children,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`side-sec ${open ? "open" : ""}`}>
+      <button className="side-sec-head" onClick={onToggle}>
+        <span>{label}</span>
+        <span className="side-caret">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && <div className="side-sec-body">{children}</div>}
+    </div>
+  );
+}
+
 function downloadBytes(bytes: Uint8Array, name: string) {
   const blob = new Blob([bytes as BlobPart], { type: "application/octet-stream" });
   const url = URL.createObjectURL(blob);
@@ -155,6 +178,7 @@ export default function Home() {
   const [exportName, setExportName] = useState("tisk");
   const [showInfo, setShowInfo] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [openSec, setOpenSec] = useState<string>("move");
 
   const [toast, setToast] = useState<{ type: string; text: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -757,44 +781,222 @@ export default function Home() {
           />
         </div>
 
-        {/* seznam modelů */}
-        {models.length > 0 && (
-          <div className="model-strip">
-            {models.map((m) => (
-              <div key={m.id} className={`model-chip ${m.id === selectedId ? "active" : ""}`}>
-                <button className="chip-name" onClick={() => setSelectedId(m.id)} title="Klikni pro výběr">
-                  {m.name}
-                </button>
-                <button className="chip-x" onClick={() => removeModel(m.id)} title="Odebrat model">
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {models.length === 0 && !loading && (
-          <div
-            className={`drop-hint ${dragOver ? "dragging" : ""}`}
-            onClick={() => fileRef.current?.click()}
-          >
-            <div className="drop-big">Přetáhni svůj model sem</div>
-            <div className="drop-small">
-              …nebo klikni na „Přidat model" · nemáš model? „Demo" / „Krychle"
+        <div className="side-panel">
+          <div className="side-title">Modely</div>
+          {models.length === 0 ? (
+            <p className="side-empty">Přidej model — „Přidat model" nahoře, nebo přetáhni soubor sem.</p>
+          ) : (
+            <div className="side-models">
+              {models.map((m) => (
+                <div key={m.id} className={`side-model ${m.id === selectedId ? "active" : ""}`}>
+                  <button className="chip-name" onClick={() => setSelectedId(m.id)} title="Klikni pro výběr">
+                    {m.name}
+                  </button>
+                  <button className="chip-x" onClick={() => removeModel(m.id)} title="Odebrat model">
+                    ×
+                  </button>
+                </div>
+              ))}
             </div>
-          </div>
-        )}
+          )}
 
-        {models.length > 0 && (
-          <div className="toolbar">
+          <SideSec
+            label="Přesun (Move)"
+            open={openSec === "move"}
+            onToggle={() => setOpenSec(openSec === "move" ? "" : "move")}
+          >
+            <div className="mp-row">
+              <button className="mp-btn" onClick={() => nudgeSel(-5, 0)}>← 5</button>
+              <button className="mp-btn" onClick={() => nudgeSel(5, 0)}>5 →</button>
+              <button className="mp-btn" onClick={() => nudgeSel(0, 5)}>↑ 5</button>
+              <button className="mp-btn" onClick={() => nudgeSel(0, -5)}>5 ↓</button>
+              <button className="mp-btn" onClick={centerSel}>Centrovat</button>
+            </div>
+            <p className="mp-hint">Táhni 3D šipkami · klávesnice šipky = ±5 mm</p>
+          </SideSec>
+
+          <SideSec
+            label="Otočení (Rotate)"
+            open={openSec === "rotate"}
+            onToggle={() => setOpenSec(openSec === "rotate" ? "" : "rotate")}
+          >
+            <div className="mp-row">
+              <button className="mp-btn" onClick={() => rotateSel("x")}>Otoč X</button>
+              <button className="mp-btn" onClick={() => rotateSel("y")}>Otoč Y</button>
+              <button className="mp-btn" onClick={() => rotateSel("z")}>Otoč Z</button>
+              <button className="mp-btn" onClick={orientSel}>Narovnej</button>
+              <button className="mp-btn" onClick={standUpSel}>Postav</button>
+              <button className="mp-btn" onClick={resetSel}>Vrať</button>
+            </div>
+          </SideSec>
+
+          <SideSec
+            label="Měřítko (Scale)"
+            open={openSec === "scale"}
+            onToggle={() => setOpenSec(openSec === "scale" ? "" : "scale")}
+          >
+            <div className="mp-row">
+              <button className="mp-btn" onClick={() => scaleSel(0.9)}>−10 %</button>
+              <button className="mp-btn" onClick={() => scaleSel(1.1)}>+10 %</button>
+              <button className="mp-btn" onClick={downloadSelStl}>Uložit STL</button>
+            </div>
+          </SideSec>
+
+          <SideSec
+            label="Zrcadlení (Mirror)"
+            open={openSec === "mirror"}
+            onToggle={() => setOpenSec(openSec === "mirror" ? "" : "mirror")}
+          >
+            <div className="mp-row">
+              <button className="mp-btn" onClick={() => mirrorSel("x")}>Zrcad X</button>
+              <button className="mp-btn" onClick={() => mirrorSel("y")}>Zrcad Y</button>
+              <button className="mp-btn" onClick={() => mirrorSel("z")}>Zrcad Z</button>
+            </div>
+          </SideSec>
+
+          <SideSec
+            label="Model (další)"
+            open={openSec === "model"}
+            onToggle={() => setOpenSec(openSec === "model" ? "" : "model")}
+          >
+            <div className="mp-row">
+              <button className="mp-btn" onClick={duplicateSel}>Duplikovat</button>
+              <button className="mp-btn mp-danger" onClick={removeSel}>Smaž</button>
+              <button className="mp-btn" onClick={screenshot3d}>Foto</button>
+              {models.length > 1 && (
+                <button className="mp-btn" onClick={arrangeAll}>Rozmístit</button>
+              )}
+            </div>
+          </SideSec>
+
+          <SideSec
+            label="Podpory (Support)"
+            open={openSec === "supports"}
+            onToggle={() => setOpenSec(openSec === "supports" ? "" : "supports")}
+          >
+            <label className="set-row check">
+              <input
+                type="checkbox"
+                checked={settings.supports}
+                onChange={(e) => setSettings((s) => ({ ...s, supports: e.target.checked }))}
+              />
+              <span>Automatické podpory</span>
+            </label>
+            {settings.supports && (
+              <>
+                <label className="set-row">
+                  <span>Ø podpory (mm)</span>
+                  <input
+                    type="number"
+                    step={0.1}
+                    min={0.3}
+                    value={settings.supportRadiusMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportRadiusMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Špička (mm)</span>
+                  <input
+                    type="number"
+                    step={0.1}
+                    min={0.2}
+                    value={settings.supportTipMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, supportTipMm: Number(e.target.value) }))}
+                  />
+                </label>
+              </>
+            )}
+          </SideSec>
+
+          <SideSec
+            label="Hollowing (dutý model)"
+            open={openSec === "hollow"}
+            onToggle={() => setOpenSec(openSec === "hollow" ? "" : "hollow")}
+          >
+            <label className="set-row check">
+              <input
+                type="checkbox"
+                checked={settings.hollow}
+                onChange={(e) => setSettings((s) => ({ ...s, hollow: e.target.checked }))}
+              />
+              <span>Dutý model</span>
+            </label>
+            {settings.hollow && (
+              <>
+                <label className="set-row">
+                  <span>Stěna (mm)</span>
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={0.5}
+                    value={settings.wallMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, wallMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Otvory Ø (mm)</span>
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={1}
+                    value={settings.holeDiaMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, holeDiaMm: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row check">
+                  <input
+                    type="checkbox"
+                    checked={settings.drainHoles}
+                    onChange={(e) => setSettings((s) => ({ ...s, drainHoles: e.target.checked }))}
+                  />
+                  <span>Odvodňovací otvory</span>
+                </label>
+              </>
+            )}
+          </SideSec>
+
+          <SideSec
+            label="Raft (základna)"
+            open={openSec === "raft"}
+            onToggle={() => setOpenSec(openSec === "raft" ? "" : "raft")}
+          >
+            <label className="set-row check">
+              <input
+                type="checkbox"
+                checked={settings.raft}
+                onChange={(e) => setSettings((s) => ({ ...s, raft: e.target.checked }))}
+              />
+              <span>Raft</span>
+            </label>
+            {settings.raft && (
+              <>
+                <label className="set-row">
+                  <span>Vrstvy</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={settings.raftLayers}
+                    onChange={(e) => setSettings((s) => ({ ...s, raftLayers: Number(e.target.value) }))}
+                  />
+                </label>
+                <label className="set-row">
+                  <span>Přesah (mm)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={settings.raftMarginMm}
+                    onChange={(e) => setSettings((s) => ({ ...s, raftMarginMm: Number(e.target.value) }))}
+                  />
+                </label>
+              </>
+            )}
+          </SideSec>
+
+          <div className="side-actions">
             <button className="btn btn-small btn-green" onClick={doSlice} disabled={slicing || models.length === 0}>
               {slicing ? "Slicuji…" : "Slicovat"}
-            </button>
-            <button
-              className={`btn btn-small ${showInfo ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => setShowInfo((s) => !s)}
-            >
-              Info
             </button>
             <button
               className={`btn btn-small ${showSettings ? "btn-primary" : "btn-ghost"}`}
@@ -802,75 +1004,14 @@ export default function Home() {
             >
               Nastavení
             </button>
+            <button
+              className={`btn btn-small ${showInfo ? "btn-primary" : "btn-ghost"}`}
+              onClick={() => setShowInfo((s) => !s)}
+            >
+              Info
+            </button>
           </div>
-        )}
-
-        {selected && (
-          <div className="model-panel">
-            <div className="mp-title">Model: {selected.name}</div>
-            <div className="mp-row">
-              <button className="mp-btn mp-primary" onClick={orientSel}>
-                Narovnej
-              </button>
-              <button className="mp-btn" onClick={standUpSel}>
-                Postav
-              </button>
-              <button className="mp-btn" onClick={resetSel}>
-                Vrať
-              </button>
-              <button className="mp-btn" onClick={duplicateSel}>
-                Duplikovat
-              </button>
-              <button className="mp-btn mp-danger" onClick={removeSel}>
-                Smaž
-              </button>
-            </div>
-            <div className="mp-row">
-              <button className="mp-btn" onClick={() => rotateSel("x")}>
-                Otoč X
-              </button>
-              <button className="mp-btn" onClick={() => rotateSel("y")}>
-                Otoč Y
-              </button>
-              <button className="mp-btn" onClick={() => rotateSel("z")}>
-                Otoč Z
-              </button>
-              <button className="mp-btn" onClick={() => scaleSel(0.9)}>
-                −10 %
-              </button>
-              <button className="mp-btn" onClick={() => scaleSel(1.1)}>
-                +10 %
-              </button>
-              <button className="mp-btn" onClick={() => mirrorSel("x")}>
-                Zrcad X
-              </button>
-              <button className="mp-btn" onClick={() => mirrorSel("y")}>
-                Zrcad Y
-              </button>
-              <button className="mp-btn" onClick={() => mirrorSel("z")}>
-                Zrcad Z
-              </button>
-            </div>
-            <div className="mp-row">
-              <button className="mp-btn" onClick={centerSel}>
-                Centrovat
-              </button>
-              <button className="mp-btn" onClick={downloadSelStl}>
-                STL
-              </button>
-              <button className="mp-btn" onClick={screenshot3d}>
-                Foto
-              </button>
-              {models.length > 1 && (
-                <button className="mp-btn" onClick={arrangeAll}>
-                  Rozmístit
-                </button>
-              )}
-              <span className="mp-hint">Přesun: 3D šipky · klávesnice šipky = ±5 mm</span>
-            </div>
-          </div>
-        )}
-
+        </div>
         {models.length > 0 && (
           <div className="fab-wrap" style={{ bottom: sliceResult ? 400 : 18 }}>
             <button className="btn btn-fab" onClick={printNow} disabled={sending || exporting}>
