@@ -658,14 +658,16 @@ function sliceInWorker(
     try {
       worker = getSliceWorker();
     } catch {
-      // worker není dostupný → synchronní fallback na hlavním vlákně
+      // worker isn't available → synchronous fallback on main thread
       try {
         resolve(runSlicePipeline(payload.models, payload.settings, payload.printer));
       } catch (e) {
         reject(e);
       }
       return;
-    }    const handler = (ev: MessageEvent<SliceWorkerResponse>) => {
+    }
+
+    const handler = (ev: MessageEvent<SliceWorkerResponse>) => {
       const msg = ev.data;
       if (msg.id !== payload.id) return;
       worker.removeEventListener("message", handler);
@@ -675,6 +677,7 @@ function sliceInWorker(
         reject(new Error(msg.error ?? "Slicování selhalo."));
       }
     };
+
     worker.addEventListener("message", handler);
     worker.postMessage(payload);
   });
