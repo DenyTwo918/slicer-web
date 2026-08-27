@@ -5,7 +5,11 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run test:core",
+    "test:core": "tsx scripts/test-regressions.ts && tsx scripts/test-multi-interval.ts && tsx scripts/test-native.ts && tsx scripts/test-hollow.ts && tsx scripts/test-supports.ts && tsx scripts/test-routing.ts && tsx scripts/test-tree.ts && tsx scripts/test-rotated.ts && tsx scripts/test-gpu-sim.ts && tsx scripts/test-export.ts && tsx scripts/test-full.ts",
+    "test:fullres": "tsx scripts/test-fullres.ts && tsx scripts/test-fullres2.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",
@@ -21,6 +25,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "tsx": "^4.23.12",
     "typescript": "^5"
   }
 }

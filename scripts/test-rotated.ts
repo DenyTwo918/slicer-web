@@ -40,7 +40,7 @@ const check = (name: string, ok: boolean, detail = "") => {
   const mesh0 = makeTorus();
   const r0 = await runSlicePipeline(
     [{ positions: mesh0.positions, bounds: mesh0.bounds, triangleCount: mesh0.triangleCount, tx: 0, ty: 0 }],
-    settings, PRINTER
+    settings, PRINTER, { collectSupportMask: true }
   );
   let raft0 = 0;
   let sup0 = 0;
@@ -57,7 +57,7 @@ const check = (name: string, ok: boolean, detail = "") => {
   console.log(`otočeno: bounds min=[${rotated.bounds.min.map((v)=>v.toFixed(1))}] max=[${rotated.bounds.max.map((v)=>v.toFixed(1))}]`);
   const r1 = await runSlicePipeline(
     [{ positions: rotated.positions, bounds: rotated.bounds, triangleCount: rotated.triangleCount, tx: 0, ty: 0 }],
-    settings, PRINTER
+    settings, PRINTER, { collectSupportMask: true }
   );
   let raft1 = 0;
   let sup1 = 0;

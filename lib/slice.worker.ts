@@ -32,7 +32,6 @@ export interface SliceWorkerResponse {
   kind?: "slice" | "exportFull" | "exportFull-progress";
   error?: string;
   result?: SliceResult | null;
-  supportMask?: Uint8Array[] | null;
   supportPreview?: SupportPreviewData | null;
   engine?: "gpu" | "cpu";
   bytes?: Uint8Array;
@@ -81,23 +80,21 @@ ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
 
   const { models, settings, printer, forceCpu } = ev.data;
   try {
-    const { result, supportMask, supportPreview, engine } = await runSlicePipeline(
+    const { result, supportPreview, engine } = await runSlicePipeline(
       models,
       settings,
       printer,
       { forceCpu }
     );
-    // vrstvy a maska se přenesou bez kopie (transfer) — main thread je potřebuje,
-    // worker po odeslání končí
+    // Vrstvy se přenesou bez kopie (transfer); worker zůstává připravený
+    // pro další požadavek.
     const transfer: Transferable[] = [];
     if (result) for (const l of result.layers) transfer.push(l.data.buffer);
-    if (supportMask) for (const m of supportMask) transfer.push(m.buffer);
     if (supportPreview?.raftMask) transfer.push(supportPreview.raftMask.buffer);
     const resp: SliceWorkerResponse = {
       id,
       ok: true,
       result,
-      supportMask,
       supportPreview,
       engine,
     };

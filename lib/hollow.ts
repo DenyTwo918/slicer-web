@@ -47,6 +47,7 @@ export function applyHollow(
   const H = slice.resolutionY;
   const px = Math.min(mmPerPx.x, mmPerPx.y);
   const wallPx = Math.max(1, Math.round(opts.wallMm / px));
+  const wallLayers = Math.max(1, Math.ceil(opts.wallMm / slice.layerHeight));
   const holeR = Math.max(1, Math.round((opts.holeDiaMm / 2) / px));
 
   const N = slice.layers.length;
@@ -58,7 +59,8 @@ export function applyHollow(
   const holeTop = opts.drainHoles ? Math.max(0, Math.floor(N * 0.85)) : -1;
 
   for (let i = 0; i < N; i++) {
-    const layer = out[i];
+    const originalLayer = slice.layers[i].data;
+    let layer = out[i];
     // vrstva plná? (skip prázdné)
     if (!hasPixels(layer)) continue;
 
@@ -73,7 +75,8 @@ export function applyHollow(
 
     // rychlá eroze: pixel zůstane, pokud okolí ve vzdálenosti wallPx je plné
     if (nativeReady() && wallPx >= 1) {
-      out[i] = wasmHollowShell(layer, W, H, wallPx);
+      layer = wasmHollowShell(layer, W, H, wallPx);
+      out[i] = layer;
     } else {
       const keep = new Uint8Array(W * H);
       const isFilled = (x: number, y: number) => layer[y * W + x] !== 0;
@@ -96,6 +99,20 @@ export function applyHollow(
       for (let p = 0; p < W * H; p++) {
         if (keep[p]) layer[p] = 0;
       }
+    }
+
+    // 2D eroze sama o sobě odstraní střechu a dno dutiny. Vnitřek smíme
+    // vymazat jen tehdy, když je pixel hluboko uvnitř také v ose Z.
+    const below = i - wallLayers;
+    const above = i + wallLayers;
+    for (let p = 0; p < W * H; p++) {
+      if (!originalLayer[p] || layer[p]) continue;
+      const zInterior =
+        below >= 0 &&
+        above < N &&
+        slice.layers[below].data[p] !== 0 &&
+        slice.layers[above].data[p] !== 0;
+      if (!zInterior) layer[p] = originalLayer[p];
     }
 
     // odvodňovací otvory: vyříznout na okraji (pravý okraj vrstvy)

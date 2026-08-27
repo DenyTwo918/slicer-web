@@ -54,6 +54,112 @@ interface DepthInfo {
   kScale: number;
 }
 
+/**
+ * Přesný vektorový průřez pro full-res export. Depth mapa umí jen jeden Z
+ * interval na paprsek a u Benchy by zalila kabinu/dutiny. Sweep drží aktivní
+ * trojúhelníky podle Z a každou vrstvu vyplní even-odd stejně jako CPU náhled.
+ */
+function createExactRasterizer(
+  models: PipelineModel[],
+  printer: PrinterProfile,
+  zStart: number,
+  layerHeight: number,
+  layerCount: number
+) {
+  const W = printer.resX;
+  const H = printer.resY;
+  const pxX = W / printer.printX;
+  const pxY = H / printer.printY;
+  const states = models.map((m) => {
+    const starts: number[][] = Array.from({ length: layerCount }, () => []);
+    const ends: number[][] = Array.from({ length: layerCount + 1 }, () => []);
+    for (let t = 0; t < m.triangleCount; t++) {
+      const o = t * 9;
+      const lo = Math.min(m.positions[o + 2], m.positions[o + 5], m.positions[o + 8]);
+      const hi = Math.max(m.positions[o + 2], m.positions[o + 5], m.positions[o + 8]);
+      const first = Math.max(0, Math.floor((lo - zStart) / layerHeight - 0.5) - 1);
+      const after = Math.min(layerCount, Math.ceil((hi - zStart) / layerHeight - 0.5) + 2);
+      if (first < layerCount && after > first) {
+        starts[first].push(t);
+        ends[after].push(t);
+      }
+    }
+    return {
+      model: m,
+      starts,
+      ends,
+      active: new Set<number>(),
+      ox: (printer.printX - (m.bounds.max[0] - m.bounds.min[0])) / 2 - m.bounds.min[0] + m.tx,
+      oy: (printer.printY - (m.bounds.max[1] - m.bounds.min[1])) / 2 - m.bounds.min[1] + m.ty,
+    };
+  });
+
+  return (layerIndex: number, z: number) => {
+    const data = new Uint8Array(W * H);
+    let count = 0;
+    let minX = W, minY = H, maxX = -1, maxY = -1;
+    for (const state of states) {
+      for (const t of state.ends[layerIndex]) state.active.delete(t);
+      for (const t of state.starts[layerIndex]) state.active.add(t);
+      const crossings: number[][] = Array.from({ length: H }, () => []);
+      const pos = state.model.positions;
+      for (const t of state.active) {
+        const o = t * 9;
+        const pts: [number, number][] = [];
+        for (let e = 0; e < 3; e++) {
+          const a = o + e * 3;
+          const b = o + ((e + 1) % 3) * 3;
+          const da = pos[a + 2] - z;
+          const db = pos[b + 2] - z;
+          if ((da < 0 && db >= 0) || (db < 0 && da >= 0)) {
+            const f = da / (da - db);
+            pts.push([
+              (pos[a] + f * (pos[b] - pos[a]) + state.ox) * pxX,
+              (pos[a + 1] + f * (pos[b + 1] - pos[a + 1]) + state.oy) * pxY,
+            ]);
+          }
+        }
+        if (pts.length !== 2) continue;
+        let [x1, y1] = pts[0];
+        let [x2, y2] = pts[1];
+        if (y1 === y2) continue;
+        if (y1 > y2) {
+          [x1, x2] = [x2, x1];
+          [y1, y2] = [y2, y1];
+        }
+        const y0 = Math.max(0, Math.floor(y1));
+        const ye = Math.min(H - 1, Math.floor(y2));
+        for (let row = y0; row <= ye; row++) {
+          const yy = row + 0.5;
+          if (yy < y1 || yy > y2) continue;
+          crossings[row].push(x1 + ((yy - y1) / (y2 - y1)) * (x2 - x1));
+        }
+      }
+      for (let y = 0; y < H; y++) {
+        const xs = crossings[y].sort((a, b) => a - b);
+        for (let k = 0; k + 1 < xs.length; k += 2) {
+          const x0 = Math.max(0, Math.ceil(xs[k]));
+          const x1 = Math.min(W - 1, Math.floor(xs[k + 1]));
+          if (x1 < x0) continue;
+          const row = y * W;
+          for (let x = x0; x <= x1; x++) {
+            const p = row + x;
+            if (!data[p]) {
+              data[p] = 255;
+              count++;
+            }
+          }
+          if (x0 < minX) minX = x0;
+          if (x1 > maxX) maxX = x1;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    return { data, count, minX, minY, maxX, maxY };
+  };
+}
+
 /** CPU rasterizace meshí do uint16 depth map (přímo do wasm paměti). */
 function rasterizeDepthFull(
   models: PipelineModel[],
@@ -136,7 +242,7 @@ export async function buildPm7FullRes(
   models: PipelineModel[],
   settings: PipelineSettings & { aa?: boolean },
   printer: PrinterProfile,
-  meshes: { bounds: { min: [number, number, number]; max: [number, number, number] } }[],
+  _meshes: { bounds: { min: [number, number, number]; max: [number, number, number] } }[],
   opts: Pm7Options & {
     previewSlice?: SliceResult | null;
     makePreview?: (slice: SliceResult, layerIdx: number, w: number, h: number) => Promise<Uint8Array>;
@@ -161,7 +267,8 @@ export async function buildPm7FullRes(
     zMax = Math.max(zMax, m.bounds.max[2]);
   }
   const zRange = Math.max(zMax - zMin, 1e-6);
-  const numLayers = Math.max(1, Math.floor(zRange / settings.layerHeight));
+  const numLayers = Math.max(1, Math.ceil(zRange / settings.layerHeight));
+  const topEpsilon = Math.max(1e-7, settings.layerHeight * 1e-6);
   const kScale = 65535 / zRange;
 
   // 1) rasterizace depth map (do wasm regionu)
@@ -181,7 +288,11 @@ export async function buildPm7FullRes(
 
   // 2) podpory + raft na slicovacím rozlišení (downsampled depth z full-res).
   //    Jednotná logika s náhledem: stejné kotvy, stejný routing, stejný raft.
-  const scale = resX % 16 === 0 ? 16 : resX % 8 === 0 ? 8 : 1;
+  const scale =
+    resX % 16 === 0 && resY % 16 === 0 ? 16 :
+    resX % 8 === 0 && resY % 8 === 0 ? 8 :
+    resX % 4 === 0 && resY % 4 === 0 ? 4 :
+    resX % 2 === 0 && resY % 2 === 0 ? 2 : 1;
   const sliceW = resX / scale;
   const sliceH = resY / scale;
   const pxPerMmSlice = printer.printX / sliceW;
@@ -199,7 +310,10 @@ export async function buildPm7FullRes(
   }
   // kvantovaná výška vrstvy li — stejná kScale jako full-res (lineární v z)
   const layerZQ: number[] = [];
-  for (let i = 0; i < numLayers; i++) layerZQ.push((0.05 + i * settings.layerHeight) * kScale);
+  for (let i = 0; i < numLayers; i++) {
+    const zRel = Math.min(zRange - topEpsilon, (i + 0.5) * settings.layerHeight);
+    layerZQ.push(zRel * kScale);
+  }
 
   let placed: PlacedPillar[] = [];
   let braceLines: BraceLine[] = [];
@@ -236,7 +350,8 @@ export async function buildPm7FullRes(
       sliceW,
       sliceH,
       undefined,
-      Math.max(1, Math.round(2.5 / settings.layerHeight))
+      Math.max(1, Math.round(2.5 / settings.layerHeight)),
+      pxPerMmSlice
     );
     const maxXY = Math.max(8, Math.round(15 / pxPerMmSlice));
     const braceRSlice = Math.max(1, Math.round(0.5 / pxPerMmSlice));
@@ -336,26 +451,31 @@ export async function buildPm7FullRes(
   const machine = printer;
   const layerInfo: SceneLayerInfo[] = [];
   const files: Record<string, Uint8Array> = {};
-  const union = meshes.length
+  const union = models.length
     ? {
         min: [
-          Math.min(...meshes.map((m) => m.bounds.min[0])),
-          Math.min(...meshes.map((m) => m.bounds.min[1])),
-          Math.min(...meshes.map((m) => m.bounds.min[2])),
+          Math.min(...models.map((m) => m.bounds.min[0] + (printer.printX - (m.bounds.max[0] - m.bounds.min[0])) / 2 - m.bounds.min[0] + m.tx)),
+          Math.min(...models.map((m) => m.bounds.min[1] + (printer.printY - (m.bounds.max[1] - m.bounds.min[1])) / 2 - m.bounds.min[1] + m.ty)),
+          Math.min(...models.map((m) => m.bounds.min[2])),
         ] as [number, number, number],
         max: [
-          Math.max(...meshes.map((m) => m.bounds.max[0])),
-          Math.max(...meshes.map((m) => m.bounds.max[1])),
-          Math.max(...meshes.map((m) => m.bounds.max[2])),
+          Math.max(...models.map((m) => m.bounds.max[0] + (printer.printX - (m.bounds.max[0] - m.bounds.min[0])) / 2 - m.bounds.min[0] + m.tx)),
+          Math.max(...models.map((m) => m.bounds.max[1] + (printer.printY - (m.bounds.max[1] - m.bounds.min[1])) / 2 - m.bounds.min[1] + m.ty)),
+          Math.max(...models.map((m) => m.bounds.max[2])),
         ] as [number, number, number],
       }
     : { min: [0, 0, 0] as [number, number, number], max: [0, 0, 0] as [number, number, number] };
+  const exactRaster = settings.hollow
+    ? null
+    : createExactRasterizer(models, printer, zMin, settings.layerHeight, numLayers);
 
   for (let i = 0; i < numLayers; i++) {
-    const zRel = 0.05 + i * settings.layerHeight;
+    const zRel = Math.min(zRange - topEpsilon, (i + 0.5) * settings.layerHeight);
     const zq = zRel * kScale;
     const wallq = i < solidBase ? 0 : hollowWallQ;
-    const res = fillBetween16Z(zq, wallq, resX, resY);
+    const res = exactRaster
+      ? exactRaster(i, zMin + zRel)
+      : fillBetween16Z(zq, wallq, resX, resY);
 
     let count = res.count;
     let minX = res.minX;
@@ -382,6 +502,10 @@ export async function buildPm7FullRes(
             if (dx * dx + dy * dy <= r2 && !(depth.front[idx] < zq && zq < depth.back[idx])) {
               res.data[idx] = 255;
               count++;
+              if (xx < minX) minX = xx;
+              if (xx > maxX) maxX = xx;
+              if (yy < minY) minY = yy;
+              if (yy > maxY) maxY = yy;
             }
           }
         }
@@ -407,6 +531,10 @@ export async function buildPm7FullRes(
             if (dx * dx + dy * dy <= r2 && !(depth.front[idx] < zq && zq < depth.back[idx])) {
               res.data[idx] = 255;
               count++;
+              if (xx < minX) minX = xx;
+              if (xx > maxX) maxX = xx;
+              if (yy < minY) minY = yy;
+              if (yy > maxY) maxY = yy;
             }
           }
         }
@@ -420,6 +548,12 @@ export async function buildPm7FullRes(
         if (!res.data[idx] && !(depth.front[idx] < zq && zq < depth.back[idx])) {
           res.data[idx] = 255;
           count++;
+          const xx = idx % resX;
+          const yy = Math.floor(idx / resX);
+          if (xx < minX) minX = xx;
+          if (xx > maxX) maxX = xx;
+          if (yy < minY) minY = yy;
+          if (yy > maxY) maxY = yy;
         }
       }
     }
@@ -460,7 +594,7 @@ export async function buildPm7FullRes(
 
     const areaMm2 = count * pxMm * pyMm;
     layerInfo.push({
-      z: zRel,
+      z: zMin + zRel,
       areaMm2,
       x0: count === 0 ? 0 : minX * pxMm,
       y0: count === 0 ? 0 : minY * pyMm,
@@ -486,7 +620,12 @@ export async function buildPm7FullRes(
     const mid = Math.floor(opts.previewSlice.layers.length / 2);
     previews = await Promise.all([
       opts.makePreview(opts.previewSlice, 0, 224, 168),
-      opts.makePreview(opts.previewSlice, Math.max(1, mid), 224, 168),
+      opts.makePreview(
+        opts.previewSlice,
+        Math.min(opts.previewSlice.layers.length - 1, Math.max(0, mid)),
+        224,
+        168
+      ),
     ]);
   } else {
     // placeholder 1×1 PNG (dekódování base64 bez Buffer závislosti)
@@ -498,14 +637,27 @@ export async function buildPm7FullRes(
     previews = [ph, ph];
   }
 
-  const volumeMl = 0; // full-res: objem počítán z náhledu (preview UI ho zobrazuje)
+  let volumeMm3 = 0;
+  for (const model of models) {
+    let signed = 0;
+    const p = model.positions;
+    for (let t = 0; t < model.triangleCount; t++) {
+      const o = t * 9;
+      const cx = p[o + 4] * p[o + 8] - p[o + 5] * p[o + 7];
+      const cy = p[o + 5] * p[o + 6] - p[o + 3] * p[o + 8];
+      const cz = p[o + 3] * p[o + 7] - p[o + 4] * p[o + 6];
+      signed += p[o] * cx + p[o + 1] * cy + p[o + 2] * cz;
+    }
+    volumeMm3 += Math.abs(signed) / 6;
+  }
+  const volumeMl = volumeMm3 / 1000;
   const printTimeS = opts.printTimeS ?? Math.round(numLayers * 10);
 
   files["anycubic_photon_resins.pwsp"] = new TextEncoder().encode(
     JSON.stringify(buildPwsp(machine), null, 4)
   );
   files["layers_controller.conf"] = new TextEncoder().encode(
-    JSON.stringify(buildLayersControllerFrom(numLayers, settings.layerHeight, layerTimes, {
+    JSON.stringify(buildLayersControllerFrom(numLayers, settings.layerHeight, layerTimes, opts.bottomLayers ?? 5, {
       zupHeightBottom: opts.zupHeightBottom ?? 1.5,
       zupSpeedBottom: opts.zupSpeedBottom ?? 0.5,
       zupHeight: opts.zupHeight ?? 1.0,

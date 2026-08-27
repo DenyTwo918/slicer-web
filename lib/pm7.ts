@@ -66,11 +66,16 @@ function rleWriter() {
   return { push, finish };
 }
 
+/** Pipeline používá 0/1 pro binární vrstvy a 0..255 po AA. */
+function rleColor(value: number): number {
+  return value <= 1 ? value * 0xf : value >> 4;
+}
+
 /** Kóduje 8bitový obraz (0..255) do RLE4 (pw0Img). */
 export function encodeRlePw0(data: Uint8Array): Uint8Array {
   const w = rleWriter();
   for (let i = 0; i < data.length; i++) {
-    w.push(data[i] >> 4, 1);
+    w.push(rleColor(data[i]), 1);
   }
   return w.finish();
 }
@@ -86,10 +91,10 @@ export function encodeLayerToMachineInternal(
 ): Uint8Array {
   const w = rleWriter();
   for (let y = 0; y < resY; y++) {
-    let c = data[y * resX] ? 0xf : 0;
+    let c = rleColor(data[y * resX]);
     let len = 1;
     for (let x = 1; x < resX; x++) {
-      const nc = data[y * resX + x] ? 0xf : 0;
+      const nc = rleColor(data[y * resX + x]);
       if (nc === c) len++;
       else {
         w.push(c, len);
@@ -113,15 +118,18 @@ function encodeLayerToMachine(
 ): Uint8Array {
   const sx = machine.resX / slice.resolutionX;
   const sy = machine.resY / slice.resolutionY;
+  if (!Number.isInteger(sx) || !Number.isInteger(sy) || sx < 1 || sy < 1) {
+    throw new Error("Rozlišení slicu musí beze zbytku dělit rozlišení tiskárny.");
+  }
   const src = layer.data;
   const w = rleWriter();
 
   for (let y = 0; y < slice.resolutionY; y++) {
     const runs: { color: number; len: number }[] = [];
-    let c = src[y * slice.resolutionX] ? 0xf : 0;
+    let c = rleColor(src[y * slice.resolutionX]);
     let len = 1;
     for (let x = 1; x < slice.resolutionX; x++) {
-      const nc = src[y * slice.resolutionX + x] ? 0xf : 0;
+      const nc = rleColor(src[y * slice.resolutionX + x]);
       if (nc === c) len++;
       else {
         runs.push({ color: c, len: len * sx });
@@ -305,15 +313,17 @@ export function buildPwsp(machine: PrinterProfile) {
 function buildLayersController(
   slice: SliceResult,
   layerTimes: number[],
+  bottomLayers: number,
   zup: { zupHeightBottom: number; zupSpeedBottom: number; zupHeight: number; zupSpeed: number }
 ) {
-  return buildLayersControllerFrom(slice.layers.length, slice.layerHeight, layerTimes, zup);
+  return buildLayersControllerFrom(slice.layers.length, slice.layerHeight, layerTimes, bottomLayers, zup);
 }
 
 export function buildLayersControllerFrom(
   count: number,
   layerHeight: number,
   layerTimes: number[],
+  bottomLayers: number,
   zup: { zupHeightBottom: number; zupSpeedBottom: number; zupHeight: number; zupSpeed: number }
 ) {
   return {
@@ -323,8 +333,8 @@ export function buildLayersControllerFrom(
       exposure_time: layerTimes[i],
       layer_minheight: Number((i * layerHeight).toFixed(4)),
       layer_thickness: Number(layerHeight.toFixed(4)),
-      zup_height: i < 5 ? zup.zupHeightBottom : zup.zupHeight,
-      zup_speed: i < 5 ? zup.zupSpeedBottom : zup.zupSpeed,
+      zup_height: i < bottomLayers ? zup.zupHeightBottom : zup.zupHeight,
+      zup_speed: i < bottomLayers ? zup.zupSpeedBottom : zup.zupSpeed,
     })),
   };
 }
@@ -414,17 +424,18 @@ export async function buildPm7(
   const normalExposure = opts.normalExposure ?? 2.5;
   const bottomLayers = opts.bottomLayers ?? 5;
 
-  const pxMm = machine.printX / machine.resX;
-  const pyMm = machine.printY / machine.resY;
+  const pxMm = machine.printX / slice.resolutionX;
+  const pyMm = machine.printY / slice.resolutionY;
   const layerInfo: SceneLayerInfo[] = slice.layers.map((l) => {
     const src = l.data;
-    let count = 0;
+    let coverage = 0;
     let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1;
     for (let y = 0; y < slice.resolutionY; y++) {
       const row = y * slice.resolutionX;
       for (let x = 0; x < slice.resolutionX; x++) {
         if (src[row + x]) {
-          count++;
+          const value = src[row + x];
+          coverage += value <= 1 ? value : value / 255;
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
           if (y < minY) minY = y;
@@ -432,7 +443,7 @@ export async function buildPm7(
         }
       }
     }
-    const areaMm2 = count * pxMm * pyMm;
+    const areaMm2 = coverage * pxMm * pyMm;
     const x0 = minX === Infinity ? 0 : minX * pxMm;
     const y0 = minY === Infinity ? 0 : minY * pyMm;
     const x1 = maxX === -1 ? 0 : (maxX + 1) * pxMm;
@@ -459,7 +470,7 @@ export async function buildPm7(
   const mid = Math.floor(slice.layers.length / 2);
   const [preview0, preview1] = await Promise.all([
     makePreviewPng(slice, 0, 224, 168),
-    makePreviewPng(slice, Math.max(1, mid), 224, 168),
+    makePreviewPng(slice, Math.min(slice.layers.length - 1, Math.max(0, mid)), 224, 168),
   ]);
 
   const volumeMl = totalVolume(meshes) / 1000;
@@ -469,7 +480,7 @@ export async function buildPm7(
   const files: Record<string, Uint8Array> = {
     "anycubic_photon_resins.pwsp": strToU8(JSON.stringify(buildPwsp(machine), null, 4)),
     "layers_controller.conf": strToU8(
-      JSON.stringify(buildLayersController(slice, layerTimes, zup), null, 4)
+      JSON.stringify(buildLayersController(slice, layerTimes, bottomLayers, zup), null, 4)
     ),
     "print_info.json": strToU8(JSON.stringify(buildPrintInfo(volumeMl, printTimeS))),
     "software_info.conf": strToU8(

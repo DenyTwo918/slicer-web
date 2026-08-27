@@ -37,6 +37,9 @@ async function getDevice(): Promise<AnyDev | null> {
     const adapter = await gpu.requestAdapter();
     if (!adapter) return null;
     device = await adapter.requestDevice();
+    device.lost?.then(() => {
+      device = null;
+    });
     return device;
   } catch {
     return null;
@@ -125,7 +128,11 @@ async function gpuSliceInner(params: GpuSliceParams): Promise<SliceResult | null
   const { models, layerHeight, printer } = params;
   if (models.length === 0) return null;
 
-  const scale = printer.resX % 16 === 0 && printer.resY % 16 === 0 ? 16 : 1;
+  const scale =
+    printer.resX % 16 === 0 && printer.resY % 16 === 0 ? 16 :
+    printer.resX % 8 === 0 && printer.resY % 8 === 0 ? 8 :
+    printer.resX % 4 === 0 && printer.resY % 4 === 0 ? 4 :
+    printer.resX % 2 === 0 && printer.resY % 2 === 0 ? 2 : 1;
   const W = printer.resX / scale;
   const H = printer.resY / scale;
   const pxPerMmX = W / printer.printX;
@@ -138,7 +145,8 @@ async function gpuSliceInner(params: GpuSliceParams): Promise<SliceResult | null
     zMax = Math.max(zMax, m.bounds.max[2]);
   }
   const zRange = Math.max(zMax - zMin, 1e-6);
-  const numLayers = Math.max(1, Math.floor(zRange / layerHeight));
+  const numLayers = Math.max(1, Math.ceil(zRange / layerHeight));
+  const topEpsilon = Math.max(1e-7, layerHeight * 1e-6);
 
   // --- vertex buffer: bake pixelové souřadnice + posun modelu (1 buffer = union všech) ---
   let totalVerts = 0;
@@ -289,6 +297,12 @@ async function gpuSliceInner(params: GpuSliceParams): Promise<SliceResult | null
     return { front, back };
   };
   const { front, back } = await mapBoth();
+  rbFront.destroy();
+  rbBack.destroy();
+  texFront.destroy();
+  texBack.destroy();
+  vb.destroy();
+  ub.destroy();
 
   // sanity check: pokud se render neprovedl (front >= back všude), spadnout na CPU
   let valid = 0;
@@ -302,11 +316,11 @@ async function gpuSliceInner(params: GpuSliceParams): Promise<SliceResult | null
     uploadDepth(front, back, n);
     const wallMm = params.hollow ? Math.max(params.wallMm, 0) : 0;
     const solidBase = params.hollow ? Math.max(1, Math.floor(numLayers * 0.02)) : 0;
-    const holeR = params.drainHoles ? Math.max(1, Math.round(params.holeDiaMm / 2 / Math.min(pxPerMmX, pxPerMmY))) : 0;
+    const holeR = params.drainHoles ? Math.max(1, Math.round(params.holeDiaMm / 2 * Math.min(pxPerMmX, pxPerMmY))) : 0;
     const holeBottom = params.hollow && params.drainHoles ? Math.max(0, Math.floor(numLayers * 0.05)) : -1;
     const holeTop = params.hollow && params.drainHoles ? Math.max(0, Math.floor(numLayers * 0.85)) : -1;
     for (let i = 0; i < numLayers; i++) {
-      const z = zMin + (i + 0.5) * layerHeight;
+      const z = Math.min(zMax - topEpsilon, zMin + (i + 0.5) * layerHeight);
       const wall = i < solidBase ? 0 : wallMm;
       const data = fillBetweenZ(z, wall, W, H);
       if (i === holeBottom || i === holeTop) carveEdgeHole(data, holeR, W, H);
@@ -316,11 +330,11 @@ async function gpuSliceInner(params: GpuSliceParams): Promise<SliceResult | null
     // WASM není — JS fill (fallback)
     const wallMm = params.hollow ? Math.max(params.wallMm, 0) : 0;
     const solidBase = params.hollow ? Math.max(1, Math.floor(numLayers * 0.02)) : 0;
-    const holeR = params.drainHoles ? Math.max(1, Math.round(params.holeDiaMm / 2 / Math.min(pxPerMmX, pxPerMmY))) : 0;
+    const holeR = params.drainHoles ? Math.max(1, Math.round(params.holeDiaMm / 2 * Math.min(pxPerMmX, pxPerMmY))) : 0;
     const holeBottom = params.hollow && params.drainHoles ? Math.max(0, Math.floor(numLayers * 0.05)) : -1;
     const holeTop = params.hollow && params.drainHoles ? Math.max(0, Math.floor(numLayers * 0.85)) : -1;
     for (let i = 0; i < numLayers; i++) {
-      const z = zMin + (i + 0.5) * layerHeight;
+      const z = Math.min(zMax - topEpsilon, zMin + (i + 0.5) * layerHeight);
       const wall = i < solidBase ? 0 : wallMm;
       const data = new Uint8Array(n);
       for (let p = 0; p < n; p++) {

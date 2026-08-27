@@ -12,6 +12,9 @@ export interface SliceOptions {
   /** Posun modelu po desce (mm), přičte se po vycentrování */
   offsetX?: number;
   offsetY?: number;
+  /** Společný absolutní Z rozsah pro korektní sjednocení více modelů. */
+  zStart?: number;
+  zEnd?: number;
 }
 
 export interface Layer {
@@ -40,8 +43,10 @@ export interface SliceResult {
  */
 export function sliceMesh(mesh: StlMesh, opts: SliceOptions): SliceResult {
   const { min, max } = mesh.bounds;
-  const height = Math.max(max[2] - min[2], 1e-6);
-  const numLayers = Math.max(1, Math.floor(height / opts.layerHeight));
+  const zStart = opts.zStart ?? min[2];
+  const zEnd = opts.zEnd ?? max[2];
+  const height = Math.max(zEnd - zStart, 1e-6);
+  const numLayers = Math.max(1, Math.ceil(height / opts.layerHeight));
   // rastr = tisková deska; model vycentrovaný (pokud deska zadána, jinak = bounds modelu)
   const plateW = opts.plateW ?? Math.max(max[0] - min[0], 1e-6);
   const plateH = opts.plateH ?? Math.max(max[1] - min[1], 1e-6);
@@ -54,13 +59,39 @@ export function sliceMesh(mesh: StlMesh, opts: SliceOptions): SliceResult {
 
   const layers: Layer[] = [];
   const positions = mesh.positions;
+  // Aktivní trojúhelníky podle Z. Původní O(vrstvy × všechny trojúhelníky)
+  // bylo na Benchy zbytečně pomalé; každý trojúhelník teď do aktivní množiny
+  // vstoupí a vystoupí jen jednou.
+  const starts: number[][] = Array.from({ length: numLayers }, () => []);
+  const ends: number[][] = Array.from({ length: numLayers + 1 }, () => []);
+  for (let t = 0; t < mesh.triangleCount; t++) {
+    const o = t * 9;
+    const triMin = Math.min(positions[o + 2], positions[o + 5], positions[o + 8]);
+    const triMax = Math.max(positions[o + 2], positions[o + 5], positions[o + 8]);
+    const first = Math.max(0, Math.floor((triMin - zStart) / opts.layerHeight - 0.5) - 1);
+    const afterLast = Math.min(
+      numLayers,
+      Math.ceil((triMax - zStart) / opts.layerHeight - 0.5) + 2
+    );
+    if (first < numLayers && afterLast > first) {
+      starts[first].push(t);
+      ends[afterLast].push(t);
+    }
+  }
+  const active = new Set<number>();
 
   for (let li = 0; li < numLayers; li++) {
-    const z = min[2] + (li + 0.5) * opts.layerHeight;
+    for (const t of ends[li]) active.delete(t);
+    for (const t of starts[li]) active.add(t);
+    // Poslední částečná vrstva musí vzorkovat uvnitř modelu, ne nad jeho stropem.
+    const z = Math.min(
+      zEnd - Math.max(1e-7, opts.layerHeight * 1e-6),
+      zStart + (li + 0.5) * opts.layerHeight
+    );
 
     // 1) segmenty v rovině XY (mm)
     const segs: number[][] = [];
-    for (let t = 0; t < mesh.triangleCount; t++) {
+    for (const t of active) {
       const o = t * 9;
       const v = [
         [positions[o], positions[o + 1], positions[o + 2]],
@@ -134,6 +165,13 @@ export function sliceMesh(mesh: StlMesh, opts: SliceOptions): SliceResult {
  * Předpokládá stejné rozlišení a výšku vrstvy; sloučí rastry vrstvu po vrstvě.
  */
 export function unionSlices(a: SliceResult, b: SliceResult): SliceResult {
+  if (
+    a.resolutionX !== b.resolutionX ||
+    a.resolutionY !== b.resolutionY ||
+    Math.abs(a.layerHeight - b.layerHeight) > 1e-9
+  ) {
+    throw new Error("Nelze sjednotit slicy s odlišným rozlišením nebo výškou vrstvy.");
+  }
   const count = Math.max(a.layers.length, b.layers.length);
   const layers = [];
   for (let i = 0; i < count; i++) {

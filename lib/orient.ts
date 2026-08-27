@@ -147,10 +147,11 @@ export function meshStats(mesh: StlMesh): MeshStats {
     comN[2] += tet * s2;
   }
   const v = Math.abs(vol);
+  const denom = 4 * vol;
   const com: [number, number, number] = [
-    comN[0] / (4 * v),
-    comN[1] / (4 * v),
-    comN[2] / (4 * v),
+    Math.abs(denom) > 1e-12 ? comN[0] / denom : (min[0] + max[0]) / 2,
+    Math.abs(denom) > 1e-12 ? comN[1] / denom : (min[1] + max[1]) / 2,
+    Math.abs(denom) > 1e-12 ? comN[2] / denom : (min[2] + max[2]) / 2,
   ];
   return {
     volume: v,
@@ -191,8 +192,8 @@ function metrics(
     if (v1[2] > maxZ) maxZ = v1[2];
     if (v2[2] > maxZ) maxZ = v2[2];
   }
-  const v = Math.abs(vol);
-  const comZ = comN[2] / (4 * v) - minZ;
+  const denom = 4 * vol;
+  const comZ = (Math.abs(denom) > 1e-12 ? comN[2] / denom : (minZ + maxZ) / 2) - minZ;
   return { proj, comZ, height: maxZ - minZ };
 }
 

@@ -1,6 +1,6 @@
-﻿/**
- * Knihovna profilĹŻ: tiskĂˇrny, pryskyĹ™ice, fĂłlie.
- * VĂ˝bÄ›r se uklĂˇdĂˇ do localStorage ("slicer.profile.v1") â€” poslednĂ­ volba se pamatuje.
+/**
+ * Knihovna profilů: tiskárny, pryskyřice, fólie.
+ * Výběr se ukládá do localStorage ("slicer.profile.v1") — poslední volba se pamatuje.
  */
 
 export interface PrinterProfile {
@@ -9,17 +9,19 @@ export interface PrinterProfile {
   brand: string;
   resX: number;
   resY: number;
-  /** rozmÄ›ry tiskovĂ© desky v mm */
+  /** rozměry tiskové desky v mm */
   printX: number;
   printY: number;
   printZ: number;
-  /** velikost pixelu v Âµm */
+  /** velikost pixelu v µm */
   pixelXUm: number;
   pixelYUm: number;
-  /** pĹ™Ă­pona souboru (pm7, pwsz, pm7m, ...) */
+  /** přípona souboru (pm7, pwsz, pm7m, ...) */
   keySuffix: string;
   keyImageFormat: string;
-  /** poznĂˇmka (nepovinnĂˇ) */
+  /** false = profil desky je použitelný pro náhled, ale tento exportér formát neumí */
+  exportSupported?: boolean;
+  /** poznámka (nepovinná) */
   note?: string;
 }
 
@@ -30,18 +32,18 @@ export interface ResinProfile {
   type: string;
   /** hustota g/ml */
   density: number;
-  /** cena za litr ($/1000 ml) â€” pro odhad ceny tisku */
+  /** cena za litr ($/1000 ml) — pro odhad ceny tisku */
   price: number;
   bottomLayers: number;
   bottomExposure: number; // s
-  normalExposure: number; // s @ 50 Âµm
+  normalExposure: number; // s @ 50 µm
   note?: string;
 }
 
 export interface FilmProfile {
   id: string;
   name: string;
-  /** nĂˇsobitel expozice oproti FEP (ACF snĂˇz pouĹˇtĂ­ â†’ mĂ©nÄ› expozice) */
+  /** násobitel expozice oproti FEP (ACF snáz pouští → méně expozice) */
   exposureFactor: number;
   note?: string;
 }
@@ -51,7 +53,7 @@ export const PRINTERS: PrinterProfile[] = [
     id: "m7",
     name: "Photon Mono M7",
     brand: "Anycubic",
-    resX: 11520, // ovÄ›Ĺ™eno z cloudu (firmware 4.0.6.7) â€” 12K, ne 14K!
+    resX: 11520, // ověřeno z cloudu (firmware 4.0.6.7) — 12K, ne 14K!
     resY: 5120,
     printX: 223.642,
     printY: 126.48,
@@ -88,7 +90,7 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 24.8,
     keySuffix: "pm7m",
     keyImageFormat: "pw0Img",
-    note: "hodnoty pĹ™edbÄ›ĹľnĂ© â€” ovÄ›Ĺ™it v Photon Workshopu",
+    note: "hodnoty předběžné — ověřit v Photon Workshopu",
   },
   {
     id: "m5s",
@@ -103,7 +105,7 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 23.8,
     keySuffix: "pm5s",
     keyImageFormat: "pwszImg",
-    note: "hodnoty pĹ™edbÄ›ĹľnĂ©",
+    note: "hodnoty předběžné",
   },
   {
     id: "mono2",
@@ -118,7 +120,8 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 34.8,
     keySuffix: "photon",
     keyImageFormat: "pw0Img",
-    note: "hodnoty pĹ™edbÄ›ĹľnĂ©",
+    exportSupported: false,
+    note: "Formát této tiskárny zatím nelze bezpečně exportovat — jen profil desky",
   },
   {
     id: "saturn4",
@@ -133,7 +136,8 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 24.0,
     keySuffix: "ctb",
     keyImageFormat: "pwszImg",
-    note: "Elegoo pouĹľĂ­vĂˇ Chitu (.ctb) â€” export .pm7 neplatĂ­, jen profil desky",
+    exportSupported: false,
+    note: "Elegoo používá Chitu (.ctb) — export .pm7 neplatí, jen profil desky",
   },
   {
     id: "sonic-mega8k",
@@ -148,7 +152,8 @@ export const PRINTERS: PrinterProfile[] = [
     pixelYUm: 57.0,
     keySuffix: "ctb",
     keyImageFormat: "pwszImg",
-    note: "Chitu (.ctb) â€” profil desky pro testy",
+    exportSupported: false,
+    note: "Chitu (.ctb) — profil desky pro testy",
   },
 ];
 
@@ -169,8 +174,8 @@ export const RESINS: ResinProfile[] = [
 
 export const FILMS: FilmProfile[] = [
   { id: "fep", name: "FEP", exposureFactor: 1.0 },
-  { id: "nfep", name: "nFEP", exposureFactor: 0.95, note: "mĂ©nÄ› expozice neĹľ FEP" },
-  { id: "acf", name: "ACF", exposureFactor: 0.85, note: "nejlĂ©pe pouĹˇtĂ­ tisk â€” nejmĂ©nÄ› expozice" },
+  { id: "nfep", name: "nFEP", exposureFactor: 0.95, note: "méně expozice než FEP" },
+  { id: "acf", name: "ACF", exposureFactor: 0.85, note: "nejlépe pouští tisk — nejméně expozice" },
 ];
 
 export const DEFAULT_PRINTER_ID = "m7";
@@ -203,12 +208,29 @@ export interface SavedProfile {
 
 const STORAGE_KEY = "slicer.profile.v1";
 
-/** NaÄŤte poslednĂ­ pouĹľitĂ˝ profil (tiskĂˇrna/pryskyĹ™ice/fĂłlie/nastavenĂ­). */
+/** Načte poslední použitý profil (tiskárna/pryskyřice/fólie/nastavení). */
 export function loadSavedProfile(): SavedProfile | null {
   try {
     if (typeof window === "undefined" || typeof localStorage === "undefined") return null;
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as SavedProfile) : null;
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<SavedProfile>;
+    if (
+      !value ||
+      !PRINTERS.some((p) => p.id === value.printerId) ||
+      !RESINS.some((r) => r.id === value.resinId) ||
+      !FILMS.some((f) => f.id === value.filmId) ||
+      !value.settings ||
+      !Number.isFinite(value.settings.layerHeight) ||
+      value.settings.layerHeight! <= 0 ||
+      !Number.isFinite(value.settings.bottomExposure) ||
+      !Number.isFinite(value.settings.normalExposure) ||
+      !Number.isInteger(value.settings.bottomLayers) ||
+      value.settings.bottomLayers! < 0 ||
+      typeof value.settings.supports !== "boolean" ||
+      typeof value.settings.aa !== "boolean"
+    ) return null;
+    return value as SavedProfile;
   } catch {
     return null;
   }
@@ -219,7 +241,6 @@ export function saveProfile(p: SavedProfile): void {
     if (typeof window === "undefined" || typeof localStorage === "undefined") return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
   } catch {
-    /* tichĂ˝ fallback */
+    /* tichý fallback */
   }
 }
-

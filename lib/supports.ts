@@ -25,6 +25,10 @@ export interface SupportOptions {
   tipPx?: number;
   legacyOverhangPx?: number;
   legacyMinComponentPx?: number;
+  /** fyzická velikost pixelu v ose X (mm/px); bez ní jen legacy M7 fallback */
+  mmPerPx?: number;
+  /** maska je drahá (vrstvy × rozlišení); náhled ji už nepotřebuje */
+  collectMask?: boolean;
 }
 
 export interface SupportResult {
@@ -115,11 +119,11 @@ export function placeSupports(
   H: number,
   radiusBottomPx?: number,
   /** délka zúženého horního segmentu ve vrstvách */
-  topLengthLayers = 1
+  topLengthLayers = 1,
+  mmPerPx = 223.642 / W
 ): PlacedPillar[] {
   const rBot = Math.max(radiusPx, Math.round(radiusBottomPx ?? radiusPx * 1.4));
-  const pxPerMm = 223.642 / W;
-  const maxOff = Math.max(4, Math.round(4 / pxPerMm)); // posun kotvy ~4 mm
+  const maxOff = Math.max(4, Math.round(4 / mmPerPx)); // posun kotvy ~4 mm
 
   // je tělo sloupu na (x,y) volné od desky až po vrstvu `from` (vyjma)?
   const bodyFree = (from: number, x: number, y: number): boolean => {
@@ -376,13 +380,23 @@ export function generateSupports(
   const bottomRadius = Math.max(radius, Math.round(radius * 1.4));
 
   const layers = slice.layers.map((l) => new Uint8Array(l.data));
-  const mask = slice.layers.map(() => new Uint8Array(W * H));
+  const collectMask = opts.collectMask !== false;
+  const mask = slice.layers.map(() => collectMask ? new Uint8Array(W * H) : new Uint8Array(0));
 
   const ctx: PillarCtx = {
     N: layers.length,
     modelAt: (li, x, y) => slice.layers[li].data[y * W + x] !== 0,
     fill: (li, cx, cy, r) =>
-      fillCircleIfEmpty(layers[li], mask[li], slice.layers[li].data, cx, cy, r, W, H),
+      fillCircleIfEmpty(
+        layers[li],
+        collectMask ? mask[li] : null,
+        slice.layers[li].data,
+        cx,
+        cy,
+        r,
+        W,
+        H
+      ),
   };
 
   let pillars: PlacedPillar[] = [];
@@ -397,7 +411,8 @@ export function generateSupports(
       W,
       H,
       bottomRadius,
-      topLengthLayers
+      topLengthLayers,
+      opts.mmPerPx
     );
   } else {
     // fallback (stará cesta bez kotev): každá vrstva vs předchozí (zřídka použito)
@@ -422,14 +437,15 @@ export function generateSupports(
       W,
       H,
       bottomRadius,
-      topLengthLayers
+      topLengthLayers,
+      opts.mmPerPx
     );
   }
 
   // příčné vzpěry mezi sousedy (max ~15 mm od sebe)
-  const pxPerMm = 223.642 / W;
-  const maxXY = Math.max(8, Math.round(15 / pxPerMm));
-  const braceR = Math.max(1, Math.round(0.5 / pxPerMm)); // ~0,5 mm
+  const mmPerPx = opts.mmPerPx ?? 223.642 / W;
+  const maxXY = Math.max(8, Math.round(15 / mmPerPx));
+  const braceR = Math.max(1, Math.round(0.5 / mmPerPx)); // ~0,5 mm
   const lines = crossBraceLines(pillars, maxXY).filter((line) =>
     braceLineFree(ctx, line, braceR, W, H)
   );

@@ -17,7 +17,7 @@ async function load(): Promise<WebAssembly.Instance | null> {
       // Node (testy) — cesta z env, default repo root
       const fs = await import("node:fs");
       const p = process.env.NATIVE_WASM_PATH || "public/wasm/slice.wasm";
-      bytes = fs.readFileSync(p);
+      bytes = fs.readFileSync(/* turbopackIgnore: true */ p);
     } else {
       const res = await fetch("/wasm/slice.wasm", { cache: "force-cache" });
       if (!res.ok) return null;

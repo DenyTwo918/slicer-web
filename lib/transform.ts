@@ -76,13 +76,23 @@ export function mirrorMesh(mesh: StlMesh, axis: "x" | "y" | "z"): StlMesh {
   const normals = new Float32Array(mesh.normals.length);
   const min: [number, number, number] = [Infinity, Infinity, Infinity];
   const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < mesh.positions.length; i += 3) {
-    for (let k = 0; k < 3; k++) {
-      const s = k === idx ? -1 : 1;
-      positions[i + k] = mesh.positions[i + k] * s;
-      normals[i + k] = mesh.normals[i + k] * s;
-      if (positions[i + k] < min[k]) min[k] = positions[i + k];
-      if (positions[i + k] > max[k]) max[k] = positions[i + k];
+  // Odraz obrátí orientaci souřadného systému. Pro zachování původního
+  // směru stěn proto zároveň prohodíme druhý a třetí vrchol každého trojúhelníku.
+  for (let tri = 0; tri < mesh.triangleCount; tri++) {
+    const base = tri * 9;
+    for (let dstVertex = 0; dstVertex < 3; dstVertex++) {
+      const srcVertex = dstVertex === 1 ? 2 : dstVertex === 2 ? 1 : 0;
+      const dst = base + dstVertex * 3;
+      const src = base + srcVertex * 3;
+      for (let k = 0; k < 3; k++) {
+        const s = k === idx ? -1 : 1;
+        positions[dst + k] = mesh.positions[src + k] * s;
+        // Normála je pseudovektor: po odrazu a opravě windingu se neguje
+        // ještě jednou oproti prostému odrazu souřadnice.
+        normals[dst + k] = mesh.normals[src + k] * -s;
+        if (positions[dst + k] < min[k]) min[k] = positions[dst + k];
+        if (positions[dst + k] > max[k]) max[k] = positions[dst + k];
+      }
     }
   }
   return { ...mesh, positions, normals, bounds: { min, max } };
@@ -123,9 +133,9 @@ export function totalVolume(meshes: StlMesh[]): number {
       const v0 = [p[o], p[o + 1], p[o + 2]];
       const v1 = [p[o + 3], p[o + 4], p[o + 5]];
       const v2 = [p[o + 6], p[o + 7], p[o + 8]];
-      const cx = v0[1] * v1[2] - v0[2] * v1[1];
-      const cy = v0[2] * v1[0] - v0[0] * v1[2];
-      const cz = v0[0] * v1[1] - v0[1] * v1[0];
+      const cx = v1[1] * v2[2] - v1[2] * v2[1];
+      const cy = v1[2] * v2[0] - v1[0] * v2[2];
+      const cz = v1[0] * v2[1] - v1[1] * v2[0];
       v += v0[0] * cx + v0[1] * cy + v0[2] * cz;
     }
     vol += Math.abs(v) / 6;

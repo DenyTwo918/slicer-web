@@ -48,6 +48,7 @@ export interface PipelinePrinter {
 
 export interface PipelineResult {
   result: SliceResult | null;
+  /** Volitelná diagnostická maska; UI ji nevyžaduje a standardně se nealokuje. */
   supportMask: Uint8Array[] | null;
   /** Hladké 3D primitivy podpor; STL model se vždy vykresluje přímo z původního meshe. */
   supportPreview: SupportPreviewData | null;
@@ -74,7 +75,7 @@ export async function runSlicePipeline(
   models: PipelineModel[],
   settings: PipelineSettings,
   printer: PipelinePrinter,
-  opts?: { forceCpu?: boolean }
+  opts?: { forceCpu?: boolean; collectSupportMask?: boolean; preferGpu?: boolean }
 ): Promise<PipelineResult> {
   await initNative();
   if (models.length === 0) {
@@ -91,7 +92,10 @@ export async function runSlicePipeline(
   // GPU slicing (WebGPU depth-based; hollow už aplikované) — jinak CPU fallback
   let result: SliceResult | null = null;
   let engine: "gpu" | "cpu" = "cpu";
-  const gpu = !opts?.forceCpu
+  // Přesný vektorový CPU sweep je po Z-indexaci rychlý i na Benchy a na rozdíl
+  // od depth mapy zachová více dutin/intervalů v jednom XY paprsku. GPU depth
+  // zůstává jen jako explicitní experimentální volba.
+  const gpu = opts?.preferGpu && !opts.forceCpu
     ? await gpuSlice({
         models,
         layerHeight: settings.layerHeight,
@@ -106,6 +110,8 @@ export async function runSlicePipeline(
     result = gpu;
     engine = "gpu";
   } else {
+    const globalZStart = Math.min(...models.map((m) => m.bounds.min[2]));
+    const globalZEnd = Math.max(...models.map((m) => m.bounds.max[2]));
     for (const m of models) {
       const mesh = {
         positions: m.positions,
@@ -121,6 +127,8 @@ export async function runSlicePipeline(
         plateH: printer.printY,
         offsetX: m.tx,
         offsetY: m.ty,
+        zStart: globalZStart,
+        zEnd: globalZEnd,
       });
       result = result ? unionSlices(result, s) : s;
     }
@@ -160,9 +168,11 @@ export async function runSlicePipeline(
       enabled: true,
       radiusPx: Math.max(2, Math.round(settings.supportRadiusMm / px)),
       tipPx: Math.max(1, Math.round(settings.supportTipMm / px)),
+      mmPerPx: mmPerPx.x,
+      collectMask: opts?.collectSupportMask === true,
     }, anchors);
     result = sr.result;
-    supportMask = sr.mask;
+    if (opts?.collectSupportMask) supportMask = sr.mask;
     supportPreview = sr.preview;
   }
   if (result && settings.raft) {
@@ -185,21 +195,19 @@ export async function runSlicePipeline(
         braces: [],
       };
     }
-    // Vlastní buffer: worker současně transferuje supportMask a stejný ArrayBuffer
-    // nesmí být v transfer listu dvakrát.
     supportPreview.raftMask = rr.mask[0] ? new Uint8Array(rr.mask[0]) : null;
     supportPreview.raftLayers = Math.min(settings.raftLayers, result.layers.length);
-    if (supportMask) {
-      const n = Math.min(supportMask.length, rr.mask.length);
-      for (let i = 0; i < n; i++) {
-        const a = supportMask[i];
-        const b = rr.mask[i];
-        for (let p = 0; p < a.length; p++) {
-          if (b[p]) a[p] = 1;
+    if (opts?.collectSupportMask) {
+      if (!supportMask) {
+        supportMask = rr.mask;
+      } else {
+        for (let i = 0; i < Math.min(supportMask.length, rr.mask.length); i++) {
+          const a = supportMask[i];
+          const b = rr.mask[i];
+          if (a.length === 0 || b.length === 0) continue;
+          for (let p = 0; p < a.length; p++) if (b[p]) a[p] = 1;
         }
       }
-    } else {
-      supportMask = rr.mask;
     }
   }
   if (result && settings.aa) {

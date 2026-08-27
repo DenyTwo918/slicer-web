@@ -71,8 +71,10 @@ export function applyRaft(
       })();
 
   const layers = slice.layers.map((l) => new Uint8Array(l.data));
-  const mask = slice.layers.map(() => new Uint8Array(W * H));
   const raftCount = Math.min(opts.layers, layers.length);
+  const mask = slice.layers.map((_, i) =>
+    i < raftCount ? new Uint8Array(W * H) : new Uint8Array(0)
+  );
   for (let i = 0; i < raftCount; i++) {
     for (let p = 0; p < W * H; p++) {
       if (raft[p]) {

@@ -34,11 +34,11 @@ result = applyHollow(result, { enabled: true, wallMm: 2, holeDiaMm: 3, drainHole
 console.log("hollow za", Date.now() - t1, "ms");
 
 const t2 = Date.now();
-result = generateSupports(result, { enabled: true, radiusPx: 4, tipPx: 2 });
+result = generateSupports(result, { enabled: true, radiusPx: 4, tipPx: 2 }).result;
 console.log("supports za", Date.now() - t2, "ms");
 
 const t3 = Date.now();
-result = applyRaft(result, { enabled: true, layers: 3, marginMm: 3 }, mmPerPx);
+result = applyRaft(result, { enabled: true, layers: 3, marginMm: 3 }, mmPerPx).result;
 console.log("raft za", Date.now() - t3, "ms");
 
 const t4 = Date.now();

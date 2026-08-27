@@ -12,21 +12,19 @@ const STORAGE_KEY = "anycubic.jwt";
 
 // ------------------------------------------------------------ MD5 (pure JS)
 
-function md5(input: string | Uint8Array): string {
+export function md5Hex(input: string | Uint8Array): string {
   // klasicka MD5 implementace (bloky)
   const bytes =
     typeof input === "string"
       ? new TextEncoder().encode(input)
       : input;
   const n = bytes.length;
-  const bitLen = n * 8;
-  const padded = new Uint8Array(((n + 8) >> 6 << 4) + 16);
+  const padded = new Uint8Array(Math.ceil((n + 9) / 64) * 64);
   padded.set(bytes);
   padded[n] = 0x80;
   const dv = new DataView(padded.buffer);
-  for (let i = 0; i < 8; i++) {
-    dv.setUint32(padded.length - 8 + (i < 4 ? 0 : 4), i < 4 ? bitLen : 0, true);
-  }
+  dv.setUint32(padded.length - 8, (n * 8) >>> 0, true);
+  dv.setUint32(padded.length - 4, Math.floor(n / 0x20000000), true);
   let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
   const S = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
   const K = new Int32Array(64);
@@ -41,12 +39,13 @@ function md5(input: string | Uint8Array): string {
       else if (i < 32) { f = (d & b) | (~d & c); g = (5 * i + 1) % 16; }
       else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) % 16; }
       else { f = c ^ (b | ~d); g = (7 * i) % 16; }
-      const tmp = d;
-      d = c; c = b;
-      b = (b + ((a + f + K[i] + w[g]) | 0) + ((0xffffffff << S[i]) & 0xffffffff)) | 0;
-      b = ((b << S[i]) | (b >>> (32 - S[i]))) | 0;
-      b = (b + c) | 0;
-      a = tmp;
+      const sum = (a + f + K[i] + w[g]) | 0;
+      const rotated = ((sum << S[i]) | (sum >>> (32 - S[i]))) | 0;
+      const nextB = (b + rotated) | 0;
+      a = d;
+      d = c;
+      c = b;
+      b = nextB;
     }
     a0 = (a0 + a) | 0; b0 = (b0 + b) | 0; c0 = (c0 + c) | 0; d0 = (d0 + d) | 0;
   }
@@ -58,7 +57,7 @@ function md5(input: string | Uint8Array): string {
 }
 
 function sign(ts: string, nonce: string): string {
-  return md5(K1 + ts + "4.1.8" + K2 + nonce + K1);
+  return md5Hex(K1 + ts + "4.1.8" + K2 + nonce + K1);
 }
 
 // ------------------------------------------------------------ API
@@ -87,7 +86,17 @@ async function api(
     headers,
     body: body !== undefined && method !== "GET" ? JSON.stringify(body) : undefined,
   });
-  return res.json();
+  const text = await res.text();
+  let payload: any = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(`Anycubic API vrátilo neplatnou odpověď (HTTP ${res.status}).`);
+  }
+  if (!res.ok) {
+    throw new Error(`Anycubic API HTTP ${res.status}: ${text.slice(0, 200)}`);
+  }
+  return payload;
 }
 
 // ------------------------------------------------------------ token
@@ -151,7 +160,7 @@ export async function sendPrintToPrinter(
   if (!put.ok) throw new Error("Nahrání souboru selhalo: HTTP " + put.status);
 
   onStep?.("Registruji soubor…");
-  const fileMd5 = md5(file);
+  const fileMd5 = md5Hex(file);
   const reg = await api(
     "/v2/profile/newUploadFile",
     {

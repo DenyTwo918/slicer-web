@@ -145,7 +145,7 @@ function downloadBytes(bytes: Uint8Array, name: string) {
   a.href = url;
   a.download = name;
   a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export default function Home() {
@@ -199,6 +199,14 @@ export default function Home() {
 
   const fileRef = useRef<HTMLInputElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sliceWorkerRef = useRef<Worker | null>(null);
+  const sliceSeqRef = useRef(0);
+
+  useEffect(() => () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    sliceWorkerRef.current?.terminate();
+    sliceWorkerRef.current = null;
+  }, []);
 
   const showToast = (type: "ok" | "err", text: string, ms = 6000) => {
     setToast({ type, text });
@@ -227,6 +235,8 @@ export default function Home() {
     setModels((prev) => [...prev, item]);
     setSelectedId(item.id);
     setSliceResult(null);
+    setSupportPreview(null);
+    setLastExport(null);
     showToast("ok", `Model přidán ✓ · ${name}`);
   }, []);
 
@@ -276,6 +286,7 @@ export default function Home() {
     setModels([]);
     setSelectedId(null);
     setSliceResult(null);
+    setSupportPreview(null);
     setLastExport(null);
     showToast("ok", "Vše smazáno");
   }, []);
@@ -362,6 +373,8 @@ export default function Home() {
   const updateModel = useCallback((id: number, fn: (m: ModelItem) => ModelItem) => {
     setModels((prev) => prev.map((m) => (m.id === id ? fn(m) : m)));
     setSliceResult(null);
+    setSupportPreview(null);
+    setLastExport(null);
   }, []);
 
   const onMove = useCallback(
@@ -428,6 +441,8 @@ export default function Home() {
     setModels((prev) => prev.filter((m) => m.id !== selectedId));
     setSelectedId(null);
     setSliceResult(null);
+    setSupportPreview(null);
+    setLastExport(null);
   }, [selectedId]);
 
   const removeModel = useCallback(
@@ -435,6 +450,8 @@ export default function Home() {
       setModels((prev) => prev.filter((m) => m.id !== id));
       if (selectedId === id) setSelectedId(null);
       setSliceResult(null);
+      setSupportPreview(null);
+      setLastExport(null);
     },
     [selectedId]
   );
@@ -452,6 +469,8 @@ export default function Home() {
     setModels((prev) => [...prev, copy]);
     setSelectedId(copy.id);
     setSliceResult(null);
+    setSupportPreview(null);
+    setLastExport(null);
     showToast("ok", "Model duplikován ✓");
   }, [selectedId, models]);
 
@@ -492,15 +511,18 @@ export default function Home() {
     showToast("ok", "STL stažen ✓");
   }, [selected]);
 
-/** Slicovací worker — singleton. Běží mimo hlavní vlákno → UI nezamrzne. */
-let sliceWorker: Worker | null = null;
-let sliceSeq = 0;
-
 function getSliceWorker(): Worker {
-  if (!sliceWorker) {
-    sliceWorker = new Worker(new URL("../lib/slice.worker.ts", import.meta.url));
+  if (!sliceWorkerRef.current) {
+    sliceWorkerRef.current = new Worker(new URL("../lib/slice.worker.ts", import.meta.url));
   }
-  return sliceWorker;
+  return sliceWorkerRef.current;
+}
+
+function discardSliceWorker(worker: Worker) {
+  if (sliceWorkerRef.current === worker) {
+    worker.terminate();
+    sliceWorkerRef.current = null;
+  }
 }
 
 /** Náhledové PNG vygenerované na hlavním vlákně (canvas). */
@@ -555,8 +577,23 @@ function exportFullInWorker(
   onProgress: (done: number, total: number) => void
 ): Promise<Uint8Array> {
   const worker = getSliceWorker();
-  const id = ++sliceSeq;
+  const id = ++sliceSeqRef.current;
   return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      worker.removeEventListener("message", handler);
+      worker.removeEventListener("error", onError);
+      worker.removeEventListener("messageerror", onMessageError);
+    };
+    const onError = () => {
+      cleanup();
+      discardSliceWorker(worker);
+      reject(new Error("Slicovací worker spadl během exportu."));
+    };
+    const onMessageError = () => {
+      cleanup();
+      discardSliceWorker(worker);
+      reject(new Error("Worker vrátil nečitelná data exportu."));
+    };
     const handler = (ev: MessageEvent<SliceWorkerResponse>) => {
       const msg = ev.data;
       if (msg.id !== id) return;
@@ -566,11 +603,13 @@ function exportFullInWorker(
         }
         return; // progress nezavírá handler
       }
-      worker.removeEventListener("message", handler);
+      cleanup();
       if (msg.ok && msg.bytes) resolve(msg.bytes);
       else reject(new Error(msg.error ?? "Full-res export selhal."));
     };
     worker.addEventListener("message", handler);
+    worker.addEventListener("error", onError);
+    worker.addEventListener("messageerror", onMessageError);
     worker.postMessage({
       id,
       kind: "exportFull",
@@ -624,7 +663,7 @@ function sliceInWorker(
   engine: "gpu" | "cpu";
 }> {
   const payload = {
-    id: ++sliceSeq,
+    id: ++sliceSeqRef.current,
     models: models.map((m) => ({
       positions: m.mesh.positions,
       bounds: m.mesh.bounds,
@@ -675,7 +714,7 @@ function sliceInWorker(
     const handler = (ev: MessageEvent<SliceWorkerResponse>) => {
       const msg = ev.data;
       if (msg.id !== payload.id) return;
-      worker.removeEventListener("message", handler);
+      cleanup();
       if (msg.ok && msg.result) {
         resolve({
           result: msg.result,
@@ -687,7 +726,26 @@ function sliceInWorker(
       }
     };
 
+    const cleanup = () => {
+      worker.removeEventListener("message", handler);
+      worker.removeEventListener("error", onError);
+      worker.removeEventListener("messageerror", onMessageError);
+    };
+    const onError = () => {
+      cleanup();
+      discardSliceWorker(worker);
+      runSlicePipeline(payload.models, payload.settings, payload.printer, { forceCpu: true })
+        .then(resolve, reject);
+    };
+    const onMessageError = () => {
+      cleanup();
+      discardSliceWorker(worker);
+      reject(new Error("Worker vrátil nečitelná data slicování."));
+    };
+
     worker.addEventListener("message", handler);
+    worker.addEventListener("error", onError);
+    worker.addEventListener("messageerror", onMessageError);
     worker.postMessage(payload);
   });
 }
@@ -760,14 +818,30 @@ const doSlice = useCallback(async () => {
     );
   }, [sliceResult, settings]);
 
-  const buildExport = useCallback(async (): Promise<{ bytes: Uint8Array; name: string } | null> => {
-    if (!sliceResult || models.length === 0) return null;
+  const buildExport = useCallback(async (sliceOverride?: SliceResult): Promise<{ bytes: Uint8Array; name: string } | null> => {
+    if (printer.exportSupported === false) {
+      throw new Error(`${printer.name}: tiskový formát .${printer.keySuffix} zatím není podporovaný.`);
+    }
+    const activeSlice = sliceOverride ?? sliceResult;
+    if (!activeSlice || models.length === 0) return null;
+    const activePrintTime = sliceOverride
+      ? Math.round(
+          settings.bottomLayers *
+            (settings.bottomExposure +
+              2 * (settings.zupHeightBottom / Math.max(settings.zupSpeedBottom, 0.1)) +
+              2) +
+          Math.max(0, activeSlice.layers.length - settings.bottomLayers) *
+            (settings.normalExposure +
+              2 * (settings.zupHeight / Math.max(settings.zupSpeed, 0.1)) +
+              2)
+        )
+      : estPrintTime;
     // náhledová PNG (generuje hlavní vlákno z canvasu)
     const previews = await Promise.all([
-      genPreviewBytes(sliceResult, 0, 224, 168),
+      genPreviewBytes(activeSlice, 0, 224, 168),
       genPreviewBytes(
-        sliceResult,
-        Math.max(1, Math.floor(sliceResult.layers.length / 2)),
+        activeSlice,
+        Math.min(activeSlice.layers.length - 1, Math.max(0, Math.floor(activeSlice.layers.length / 2))),
         224,
         168
       ),
@@ -782,7 +856,7 @@ const doSlice = useCallback(async () => {
         zupSpeedBottom: settings.zupSpeedBottom,
         zupHeight: settings.zupHeight,
         zupSpeed: settings.zupSpeed,
-        printTimeS: estPrintTime,
+        printTimeS: activePrintTime,
       }, previews, (done, total) => {
         setExportProgress(`${done}/${total}`);
       });
@@ -793,7 +867,7 @@ const doSlice = useCallback(async () => {
       showToast("err", "Full-res export selhal → záložně v náhledovém rozlišení.", 6000);
       const bytes = await buildPm7(
         models.map((m) => applyTransform(m.mesh, m.transform)),
-        sliceResult,
+        activeSlice,
         {
           printer,
           bottomExposure: settings.bottomExposure,
@@ -803,7 +877,7 @@ const doSlice = useCallback(async () => {
           zupSpeed: settings.zupSpeed,
           zupHeightBottom: settings.zupHeightBottom,
           zupSpeedBottom: settings.zupSpeedBottom,
-          printTimeS: estPrintTime,
+          printTimeS: activePrintTime,
         }
       );
       return { bytes, name: `${exportName}.${printer.keySuffix}` };
@@ -830,7 +904,8 @@ const doSlice = useCallback(async () => {
     setSending(true);
     try {
       // 1) slicovat, pokud ještě není
-      if (!sliceResult) {
+      let activeSlice = sliceResult;
+      if (!activeSlice) {
         showToast("ok", "Slicuji…", 3000);
         const { result, supportPreview: sp } = await sliceInWorker(models, settings, printer);
         if (!result) {
@@ -840,9 +915,10 @@ const doSlice = useCallback(async () => {
         setSupportPreview(sp);
         setSliceResult(result);
         setSliceIdx(0);
+        activeSlice = result;
       }
       // 2) připravit soubor v paměti (bez stažení)
-      const ex = await buildExport();
+      const ex = await buildExport(activeSlice);
       if (!ex) return;
       setLastExport(ex);
       // 3) token
@@ -870,7 +946,7 @@ const doSlice = useCallback(async () => {
     } finally {
       setSending(false);
     }
-  }, [models, sliceResult, buildExport]);
+  }, [models, sliceResult, settings, printer, buildExport]);
 
   const centerSel = useCallback(() => {
     if (!selectedId) return;
@@ -924,6 +1000,8 @@ const doSlice = useCallback(async () => {
       })
     );
     setSliceResult(null);
+    setSupportPreview(null);
+    setLastExport(null);
     showToast("ok", "Modely rozmístěny ✓");
   }, []);
 
@@ -942,8 +1020,14 @@ const doSlice = useCallback(async () => {
   }, []);
 
 
-  const volMl = totalVolume(models.map((m) => applyTransform(m.mesh, m.transform))) / 1000;
-  const selStats: MeshStats | null = selected ? meshStats(selected.mesh) : null;
+  const volMl = useMemo(
+    () => totalVolume(models.map((m) => applyTransform(m.mesh, m.transform))) / 1000,
+    [models]
+  );
+  const selStats: MeshStats | null = useMemo(
+    () => selected ? meshStats(selected.mesh) : null,
+    [selected]
+  );
 
   const viewModels = useMemo(
     () =>
@@ -1003,6 +1087,7 @@ const doSlice = useCallback(async () => {
       else if (e.key === "ArrowDown") nudgeSel(0, -5);
       else if (e.key === "Escape" && sliceResult) {
         setSliceResult(null);
+        setSupportPreview(null);
         setLastExport(null);
       } else if (e.key === "Delete" && selectedId !== null) {
         removeModel(selectedId);
@@ -1711,6 +1796,7 @@ const doSlice = useCallback(async () => {
                 className="slice-close"
                 onClick={() => {
                   setSliceResult(null);
+                  setSupportPreview(null);
                   setLastExport(null);
                 }}
                 title="Zavřít náhled"

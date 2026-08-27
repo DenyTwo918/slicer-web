@@ -10,13 +10,15 @@ export function parseObj(text: string): StlMesh {
     const p = line.trim().split(/\s+/);
     if (!p[0]) continue;
     if (p[0] === "v" && p.length >= 4) {
-      verts.push([parseFloat(p[1]), parseFloat(p[2]), parseFloat(p[3])]);
+      const vertex = [parseFloat(p[1]), parseFloat(p[2]), parseFloat(p[3])];
+      if (vertex.every(Number.isFinite)) verts.push(vertex);
     } else if (p[0] === "f" && p.length >= 4) {
-      const ids = p
-        .slice(1)
-        .map((x) => Math.abs(parseInt(x.split("/")[0], 10)) - 1)
-        .filter((i) => i >= 0 && i < verts.length);
-      if (ids.length >= 3) {
+      const ids = p.slice(1).map((x) => {
+          const raw = parseInt(x.split("/")[0], 10);
+          if (!Number.isInteger(raw) || raw === 0) return -1;
+          return raw > 0 ? raw - 1 : verts.length + raw;
+        });
+      if (ids.length >= 3 && ids.every((i) => i >= 0 && i < verts.length)) {
         for (let i = 1; i < ids.length - 1; i++) {
           tris.push([ids[0], ids[i], ids[i + 1]]);
         }
