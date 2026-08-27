@@ -221,7 +221,16 @@ export async function buildPm7FullRes(
       fill: () => {},
     };
     // Chitubox model: jen kotvy s volnou svislou cestou (blokované se přeskočí)
-    placed = placeSupports(anchors, frCtx, radiusPx, tipPx, sliceW, sliceH);
+    placed = placeSupports(
+      anchors,
+      frCtx,
+      radiusPx,
+      tipPx,
+      sliceW,
+      sliceH,
+      undefined,
+      Math.max(1, Math.round(2.5 / settings.layerHeight))
+    );
     const maxXY = Math.max(8, Math.round(15 / pxPerMmSlice));
     braceLines = crossBraceLines(placed, maxXY);
   }

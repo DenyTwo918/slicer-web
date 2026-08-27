@@ -2,17 +2,18 @@ import type { SliceResult } from "./slice";
 import { nativeReady, wasmDilate } from "./native";
 
 /**
- * SLA podpory — Chitubox model (2026-08-26, po researchu):
+ * SLA podpory — geometrický model společný pro slicing i 3D náhled:
  *
  *   TIP (kontaktní bod, malý Ø)          ← dotyk s modelem
- *   ┃ TOP/MIDDLE sloup — VŽDY SVISLÝ     ← zužuje se nahoru
+ *   ╲ TOP segment                         ← kužel/rameno ke kontaktnímu bodu
+ *   ┃ MIDDLE sloup                        ← svislý nebo sdílený hlavní dřík
  *   ┃                                    ← kolizní kontrola celé cesty
  *   ▙ BOTTOM patka / deska
  *
  * Pravidla (dle Chitubox docs):
- *  • Podpora se umístí JEN když má od desky ke kotvě VOLNOU SVISLOU CESTU
- *    (jinak se kotva přeskočí — „Spacing From Model")
- *  • Sloup je rovný, mírně se rozšiřuje k dolů (stabilita)
+ *  • Tělo podpory nesmí protínat model; při blokované cestě se hlavní sloup
+ *    odsadí a ke kotvě vede šikmý horní segment („Max Contact Point Offset")
+ *  • Hlavní sloup je hladký válec/komolý kužel, nikoli voxelový sloupec
  *  • Stabilita souboru = PŘÍČNÉ VZPĚRY (cross bracing) mezi sousedy — X vzory
  */
 
@@ -29,6 +30,23 @@ export interface SupportOptions {
 export interface SupportResult {
   result: SliceResult;
   mask: Uint8Array[];
+  /** Sémantická geometrie pro hladký 3D náhled (masku ve viewportu nerekonstruujeme). */
+  preview: SupportPreviewData;
+}
+
+export interface SupportPreviewData {
+  resolutionX: number;
+  resolutionY: number;
+  layerHeight: number;
+  radiusPx: number;
+  tipPx: number;
+  bottomRadiusPx: number;
+  braceRadiusPx: number;
+  pillars: PlacedPillar[];
+  braces: BraceLine[];
+  /** Samostatný otisk raftu; doplní jej pipeline po applyRaft(). */
+  raftMask?: Uint8Array | null;
+  raftLayers?: number;
 }
 
 const DEFAULTS = {
@@ -44,9 +62,15 @@ export interface PillarCtx {
 }
 
 export interface PlacedPillar {
+  /** střed hlavního sloupu v pixelech slicovacího rastru */
   x: number;
   y: number;
+  /** nejvyšší vrstva hlavního sloupu */
   top: number;
+  /** skutečný kontaktní bod na modelu */
+  anchorX: number;
+  anchorY: number;
+  anchorLayer: number;
 }
 
 /** kruh kolem (x,y) zasahuje do modelu? */
@@ -89,7 +113,9 @@ export function placeSupports(
   tipPx: number,
   W: number,
   H: number,
-  radiusBottomPx?: number
+  radiusBottomPx?: number,
+  /** délka zúženého horního segmentu ve vrstvách */
+  topLengthLayers = 1
 ): PlacedPillar[] {
   const rBot = Math.max(radiusPx, Math.round(radiusBottomPx ?? radiusPx * 1.4));
   const pxPerMm = 223.642 / W;
@@ -115,12 +141,14 @@ export function placeSupports(
   for (const a of sorted) {
     if (a.x < 0 || a.y < 0 || a.x >= W || a.y >= H) continue;
     const top = Math.min(Math.max(0, a.layer), ctx.N - 1);
+    const directPillarTop = Math.max(0, top - Math.max(1, topLengthLayers));
 
     // špička u kotvy — vždy (dotyk s modelem je účel)
     const drawTipAndPillar = (px: number, py: number, pillarTop: number) => {
       ctx.fill(top, a.x, a.y, tipPx);
-      // šikmý spoj ze špičky ke sloupu (pokud jsou rozdílné pozice)
-      if (pillarTop >= 0 && (px !== a.x || py !== a.y)) {
+      // Kuželový/šikmý horní segment od hlavního sloupu ke kontaktní špičce.
+      // Poloměr se směrem k modelu plynule zmenšuje radius → tip.
+      if (pillarTop >= 0) {
         const steps = Math.max(
           top - pillarTop,
           Math.round(Math.hypot(px - a.x, py - a.y)),
@@ -131,7 +159,8 @@ export function placeSupports(
           const li = Math.round(top - (top - pillarTop) * f);
           const cx = Math.round(a.x + (px - a.x) * f);
           const cy = Math.round(a.y + (py - a.y) * f);
-          if (li >= 0 && li < ctx.N && li <= top) ctx.fill(li, cx, cy, radiusPx);
+          const r = Math.max(tipPx, Math.round(tipPx + (radiusPx - tipPx) * f));
+          if (li >= 0 && li < ctx.N && li <= top) ctx.fill(li, cx, cy, r);
         }
       }
       // sloup dolů (rozšiřující se k desce)
@@ -144,9 +173,16 @@ export function placeSupports(
     };
 
     // 1) přímá cesta: tělo sloupu (pod špičkou) musí být celé volné
-    if (bodyFree(top, a.x, a.y)) {
-      placed.push({ x: a.x, y: a.y, top });
-      drawTipAndPillar(a.x, a.y, top);
+    if (bodyFree(directPillarTop, a.x, a.y)) {
+      placed.push({
+        x: a.x,
+        y: a.y,
+        top: directPillarTop,
+        anchorX: a.x,
+        anchorY: a.y,
+        anchorLayer: top,
+      });
+      drawTipAndPillar(a.x, a.y, directPillarTop);
       continue;
     }
 
@@ -168,7 +204,14 @@ export function placeSupports(
     }
     if (!found) continue; // nikde volno — kotva přeskočena
 
-    placed.push({ x: found.x, y: found.y, top: found.clearTop });
+    placed.push({
+      x: found.x,
+      y: found.y,
+      top: found.clearTop,
+      anchorX: a.x,
+      anchorY: a.y,
+      anchorLayer: top,
+    });
     drawTipAndPillar(found.x, found.y, found.clearTop);
   }
   return placed;
@@ -264,12 +307,24 @@ export function generateSupports(
     return {
       result: slice,
       mask: slice.layers.map(() => new Uint8Array(0)),
+      preview: {
+        resolutionX: slice.resolutionX,
+        resolutionY: slice.resolutionY,
+        layerHeight: slice.layerHeight,
+        radiusPx: 0,
+        tipPx: 0,
+        bottomRadiusPx: 0,
+        braceRadiusPx: 0,
+        pillars: [],
+        braces: [],
+      },
     };
   }
   const W = slice.resolutionX;
   const H = slice.resolutionY;
   const radius = opts.radiusPx ?? DEFAULTS.radiusPx;
   const tip = opts.tipPx ?? DEFAULTS.tipPx;
+  const bottomRadius = Math.max(radius, Math.round(radius * 1.4));
 
   const layers = slice.layers.map((l) => new Uint8Array(l.data));
   const mask = slice.layers.map(() => new Uint8Array(W * H));
@@ -284,7 +339,17 @@ export function generateSupports(
   let pillars: PlacedPillar[] = [];
   if (anchors) {
     // moderní cesta: kotvy z meshí (úhlová detekce) — jen volné svislé cesty
-    pillars = placeSupports(anchors, ctx, radius, tip, W, H);
+    const topLengthLayers = Math.max(1, Math.round(2.5 / slice.layerHeight));
+    pillars = placeSupports(
+      anchors,
+      ctx,
+      radius,
+      tip,
+      W,
+      H,
+      bottomRadius,
+      topLengthLayers
+    );
   } else {
     // fallback (stará cesta bez kotev): každá vrstva vs předchozí (zřídka použito)
     const overhangPx = opts.legacyOverhangPx ?? 1;
@@ -299,7 +364,17 @@ export function generateSupports(
       for (let p = 0; p < W * H; p++) oh[p] = cur[p] && !prevDil[p] ? 1 : 0;
       for (const c of components(oh, W, H, minSize)) legacy.push({ x: c.x, y: c.y, layer: i });
     }
-    pillars = placeSupports(legacy, ctx, radius, tip, W, H);
+    const topLengthLayers = Math.max(1, Math.round(2.5 / slice.layerHeight));
+    pillars = placeSupports(
+      legacy,
+      ctx,
+      radius,
+      tip,
+      W,
+      H,
+      bottomRadius,
+      topLengthLayers
+    );
   }
 
   // příčné vzpěry mezi sousedy (max ~15 mm od sebe)
@@ -317,6 +392,17 @@ export function generateSupports(
       ),
     },
     mask,
+    preview: {
+      resolutionX: W,
+      resolutionY: H,
+      layerHeight: slice.layerHeight,
+      radiusPx: radius,
+      tipPx: tip,
+      bottomRadiusPx: bottomRadius,
+      braceRadiusPx: braceR,
+      pillars,
+      braces: lines,
+    },
   };
 }
 

@@ -1,6 +1,6 @@
 import type { StlBounds } from "./stl";
 import { sliceMesh, unionSlices, type SliceResult } from "./slice";
-import { generateSupports } from "./supports";
+import { generateSupports, type SupportPreviewData } from "./supports";
 import { applyHollow } from "./hollow";
 import { applyRaft } from "./raft";
 import { applyAA } from "./aa";
@@ -49,6 +49,8 @@ export interface PipelinePrinter {
 export interface PipelineResult {
   result: SliceResult | null;
   supportMask: Uint8Array[] | null;
+  /** Hladké 3D primitivy podpor; STL model se vždy vykresluje přímo z původního meshe. */
+  supportPreview: SupportPreviewData | null;
   /** Který slicing engine běžel */
   engine: "gpu" | "cpu";
 }
@@ -75,7 +77,9 @@ export async function runSlicePipeline(
   opts?: { forceCpu?: boolean }
 ): Promise<PipelineResult> {
   await initNative();
-  if (models.length === 0) return { result: null, supportMask: null, engine: "cpu" };
+  if (models.length === 0) {
+    return { result: null, supportMask: null, supportPreview: null, engine: "cpu" };
+  }
   const scale = sliceScale(printer.resX, printer.resY);
   const sliceW = printer.resX / scale;
   const sliceH = printer.resY / scale;
@@ -134,6 +138,7 @@ export async function runSlicePipeline(
     }
   }
   let supportMask: Uint8Array[] | null = null;
+  let supportPreview: SupportPreviewData | null = null;
   const px = Math.min(mmPerPx.x, mmPerPx.y);
   if (result && settings.supports) {
     // kotvy podpor z meshí (úhlová detekce) — podpírá se jen skutečný podhled
@@ -158,6 +163,7 @@ export async function runSlicePipeline(
     }, anchors);
     result = sr.result;
     supportMask = sr.mask;
+    supportPreview = sr.preview;
   }
   if (result && settings.raft) {
     const rr = applyRaft(
@@ -166,6 +172,23 @@ export async function runSlicePipeline(
       mmPerPx
     );
     result = rr.result;
+    if (!supportPreview) {
+      supportPreview = {
+        resolutionX: result.resolutionX,
+        resolutionY: result.resolutionY,
+        layerHeight: result.layerHeight,
+        radiusPx: 0,
+        tipPx: 0,
+        bottomRadiusPx: 0,
+        braceRadiusPx: 0,
+        pillars: [],
+        braces: [],
+      };
+    }
+    // Vlastní buffer: worker současně transferuje supportMask a stejný ArrayBuffer
+    // nesmí být v transfer listu dvakrát.
+    supportPreview.raftMask = rr.mask[0] ? new Uint8Array(rr.mask[0]) : null;
+    supportPreview.raftLayers = Math.min(settings.raftLayers, result.layers.length);
     if (supportMask) {
       const n = Math.min(supportMask.length, rr.mask.length);
       for (let i = 0; i < n; i++) {
@@ -182,5 +205,5 @@ export async function runSlicePipeline(
   if (result && settings.aa) {
     result = applyAA(result);
   }
-  return { result, supportMask, engine };
+  return { result, supportMask, supportPreview, engine };
 }

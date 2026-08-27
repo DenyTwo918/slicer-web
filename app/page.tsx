@@ -26,6 +26,7 @@ import {
 import type { SliceResult } from "@/lib/slice";
 import { runSlicePipeline, type PipelineSettings } from "@/lib/pipeline";
 import type { SliceWorkerResponse } from "@/lib/slice.worker";
+import type { SupportPreviewData } from "@/lib/supports";
 import type { PrinterProfile } from "@/lib/profiles";
 import { buildPm7 } from "@/lib/pm7";
 import { sendPrintToPrinter, getStoredJwt, setStoredJwt } from "@/lib/anycubic";
@@ -166,7 +167,7 @@ export default function Home() {
   });
 
   const [sliceResult, setSliceResult] = useState<SliceResult | null>(null);
-  const [supportMask, setSupportMask] = useState<Uint8Array[] | null>(null);
+  const [supportPreview, setSupportPreview] = useState<SupportPreviewData | null>(null);
 
   /**
    * Jediný způsob, jak měnit nastavení: jakákoliv změna ZRUŠÍ náhled tisku
@@ -175,7 +176,7 @@ export default function Home() {
   const updateSettings = useCallback((updater: (s: SliceSettings) => SliceSettings) => {
     setSettings(updater);
     setSliceResult(null);
-    setSupportMask(null);
+    setSupportPreview(null);
     setSliceIdx(0);
     setLastExport(null);
   }, []);
@@ -323,7 +324,7 @@ export default function Home() {
     if (lastPrinterId.current !== printerId) {
       lastPrinterId.current = printerId;
       setSliceResult(null);
-      setSupportMask(null);
+      setSupportPreview(null);
       setLastExport(null);
     }
   }, [printerId]);
@@ -617,7 +618,11 @@ function sliceInWorker(
   models: ModelItem[],
   settings: SliceSettings,
   printer: PrinterProfile
-): Promise<{ result: SliceResult | null; supportMask: Uint8Array[] | null; engine: "gpu" | "cpu" }> {
+): Promise<{
+  result: SliceResult | null;
+  supportPreview: SupportPreviewData | null;
+  engine: "gpu" | "cpu";
+}> {
   const payload = {
     id: ++sliceSeq,
     models: models.map((m) => ({
@@ -672,7 +677,11 @@ function sliceInWorker(
       if (msg.id !== payload.id) return;
       worker.removeEventListener("message", handler);
       if (msg.ok && msg.result) {
-        resolve({ result: msg.result, supportMask: msg.supportMask ?? null, engine: msg.engine ?? "cpu" });
+        resolve({
+          result: msg.result,
+          supportPreview: msg.supportPreview ?? null,
+          engine: msg.engine ?? "cpu",
+        });
       } else {
         reject(new Error(msg.error ?? "Slicování selhalo."));
       }
@@ -687,10 +696,10 @@ const doSlice = useCallback(async () => {
   if (models.length === 0) return;
   setSlicing(true);
   try {
-    const { result, supportMask: sm, engine } = await sliceInWorker(models, settings, printer);
+    const { result, supportPreview: sp, engine } = await sliceInWorker(models, settings, printer);
     if (result) {
       setSliceResult(result);
-      setSupportMask(sm);
+      setSupportPreview(sp);
       // začni od horní vrstvy → model je v 3D vidět celý, tahem slideru dolů vidíš řez
       setSliceIdx(Math.max(0, result.layers.length - 1));
       if (typeof window !== "undefined") {
@@ -823,12 +832,12 @@ const doSlice = useCallback(async () => {
       // 1) slicovat, pokud ještě není
       if (!sliceResult) {
         showToast("ok", "Slicuji…", 3000);
-        const { result, supportMask: sm } = await sliceInWorker(models, settings, printer);
+        const { result, supportPreview: sp } = await sliceInWorker(models, settings, printer);
         if (!result) {
           showToast("err", "Slicování selhalo.", 8000);
           return;
         }
-        setSupportMask(sm);
+        setSupportPreview(sp);
         setSliceResult(result);
         setSliceIdx(0);
       }
@@ -1042,7 +1051,7 @@ const doSlice = useCallback(async () => {
             printer={printer}
             layerPreview={layerPreview}
             gizmoMode={gizmoMode}
-            supportMask={supportMask}
+            supportPreview={supportPreview}
           />
         </div>
 
@@ -1743,4 +1752,3 @@ const doSlice = useCallback(async () => {
     </div>
   );
 }
-

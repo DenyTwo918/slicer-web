@@ -2,6 +2,7 @@ import { runSlicePipeline, type PipelineModel, type PipelinePrinter, type Pipeli
 import type { SliceResult } from "./slice";
 import { buildPm7FullRes } from "./fullRes";
 import type { PrinterProfile } from "./profiles";
+import type { SupportPreviewData } from "./supports";
 
 export interface SliceWorkerRequest {
   id: number;
@@ -32,6 +33,7 @@ export interface SliceWorkerResponse {
   error?: string;
   result?: SliceResult | null;
   supportMask?: Uint8Array[] | null;
+  supportPreview?: SupportPreviewData | null;
   engine?: "gpu" | "cpu";
   bytes?: Uint8Array;
   done?: number;
@@ -79,13 +81,26 @@ ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
 
   const { models, settings, printer, forceCpu } = ev.data;
   try {
-    const { result, supportMask, engine } = await runSlicePipeline(models, settings, printer, { forceCpu });
+    const { result, supportMask, supportPreview, engine } = await runSlicePipeline(
+      models,
+      settings,
+      printer,
+      { forceCpu }
+    );
     // vrstvy a maska se přenesou bez kopie (transfer) — main thread je potřebuje,
     // worker po odeslání končí
     const transfer: Transferable[] = [];
     if (result) for (const l of result.layers) transfer.push(l.data.buffer);
     if (supportMask) for (const m of supportMask) transfer.push(m.buffer);
-    const resp: SliceWorkerResponse = { id, ok: true, result, supportMask, engine };
+    if (supportPreview?.raftMask) transfer.push(supportPreview.raftMask.buffer);
+    const resp: SliceWorkerResponse = {
+      id,
+      ok: true,
+      result,
+      supportMask,
+      supportPreview,
+      engine,
+    };
     ctx.postMessage(resp, transfer);
   } catch (err) {
     const resp: SliceWorkerResponse = {

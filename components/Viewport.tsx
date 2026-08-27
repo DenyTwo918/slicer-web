@@ -14,6 +14,7 @@ import * as THREE from "three";
 import type { StlMesh } from "@/lib/stl";
 import type { ModelTransform } from "@/lib/transform";
 import type { PrinterProfile } from "@/lib/profiles";
+import type { SupportPreviewData } from "@/lib/supports";
 
 interface ViewModel {
   id: number;
@@ -138,93 +139,266 @@ function LayerPlane({
   );
 }
 
-/** Podpory/raft jako 3D zelené sloupky (InstancedMesh = plynulé). */
-function SupportMesh({
-  mask,
-  resolutionX,
-  resolutionY,
-  layerHeight,
-  printer,
-  cutZ,
+type PreviewSegment = {
+  a: [number, number, number];
+  b: [number, number, number];
+  radius: number;
+};
+
+/** Hladké instancované válce/komolé kužely mezi libovolnými dvěma body. */
+function SegmentInstances({
+  segments,
+  geometry,
+  clippingPlane,
+  color,
 }: {
-  mask: Uint8Array[] | null;
-  resolutionX: number;
-  resolutionY: number;
-  layerHeight: number;
-  printer: PrinterProfile;
-  cutZ: number | null;
+  segments: PreviewSegment[];
+  geometry: THREE.BufferGeometry;
+  clippingPlane: THREE.Plane;
+  color: string;
 }) {
-  const W = resolutionX;
-  const sx = printer.printX / resolutionX;
-  const sy = printer.printY / resolutionY;
-
-  // sloupky: pro každý (x,y) sloupec najdeme souvislé úseky masky
-  const boxes = useMemo(() => {
-    if (!mask || mask.length === 0) return [];
-    const H = resolutionY;
-    const N = mask.length;
-    const out: { x: number; y: number; zMin: number; zMax: number }[] = [];
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        let runStart = -1;
-        for (let i = 0; i <= N; i++) {
-          const on = i < N ? mask[i][y * W + x] !== 0 : false;
-          if (on && runStart < 0) runStart = i;
-          if (!on && runStart >= 0) {
-            out.push({
-              x: (x + 0.5) * sx - printer.printX / 2,
-              y: (y + 0.5) * sy - printer.printY / 2,
-              zMin: runStart * layerHeight,
-              zMax: i * layerHeight,
-            });
-            runStart = -1;
-          }
-        }
-      }
-    }
-    return out;
-  }, [mask, W, resolutionY, layerHeight, sx, sy, printer.printX, printer.printY]);
-
-  const meshRef = useRef<THREE.InstancedMesh>(null);
-
+  const ref = useRef<THREE.InstancedMesh>(null);
   useEffect(() => {
-    const mesh = meshRef.current;
+    const mesh = ref.current;
     if (!mesh) return;
     const dummy = new THREE.Object3D();
-    const zCut = cutZ ?? Infinity;
-    boxes.forEach((b, i) => {
-      const zMaxC = Math.min(b.zMax, zCut);
-      if (zMaxC <= b.zMin) {
-        dummy.position.set(b.x, b.y, b.zMin);
-        dummy.scale.set(0, 0, 0);
-      } else {
-        dummy.position.set(b.x, b.y, (b.zMin + zMaxC) / 2);
-        dummy.scale.set(sx, sy, zMaxC - b.zMin);
-      }
+    const up = new THREE.Vector3(0, 1, 0);
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    segments.forEach((s, i) => {
+      a.fromArray(s.a);
+      b.fromArray(s.b);
+      dir.subVectors(b, a);
+      const length = Math.max(0.0001, dir.length());
+      dummy.position.copy(a).add(b).multiplyScalar(0.5);
+      dummy.quaternion.setFromUnitVectors(up, dir.normalize());
+      dummy.scale.set(s.radius, length, s.radius);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     });
+    mesh.count = segments.length;
     mesh.instanceMatrix.needsUpdate = true;
-    mesh.count = boxes.length;
-    mesh.visible = boxes.length > 0;
-  }, [boxes, cutZ, sx, sy]);
+  }, [segments]);
 
-  const geometry = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []);
-  useEffect(() => {
-    return () => {
-      geometry.dispose();
-    };
-  }, [geometry]);
-
-  if (boxes.length === 0) return null;
+  if (segments.length === 0) return null;
   return (
-      <instancedMesh
-        ref={meshRef}
-        args={[geometry, undefined, boxes.length]}
-        frustumCulled={false}
-      >
-        <meshStandardMaterial color="#22c55e" transparent opacity={0.75} />
-      </instancedMesh>
+    <instancedMesh ref={ref} args={[geometry, undefined, segments.length]} frustumCulled={false}>
+      <meshStandardMaterial
+        color={color}
+        metalness={0.05}
+        roughness={0.5}
+        clippingPlanes={[clippingPlane]}
+        depthWrite
+        depthTest
+      />
+    </instancedMesh>
+  );
+}
+
+function TipInstances({
+  tips,
+  geometry,
+  clippingPlane,
+}: {
+  tips: { p: [number, number, number]; radius: number }[];
+  geometry: THREE.BufferGeometry;
+  clippingPlane: THREE.Plane;
+}) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  useEffect(() => {
+    const mesh = ref.current;
+    if (!mesh) return;
+    const dummy = new THREE.Object3D();
+    tips.forEach((tip, i) => {
+      dummy.position.fromArray(tip.p);
+      dummy.quaternion.identity();
+      dummy.scale.setScalar(tip.radius);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    });
+    mesh.count = tips.length;
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [tips]);
+
+  if (tips.length === 0) return null;
+  return (
+    <instancedMesh ref={ref} args={[geometry, undefined, tips.length]} frustumCulled={false}>
+      <meshStandardMaterial
+        color="#4ade80"
+        metalness={0.04}
+        roughness={0.42}
+        clippingPlanes={[clippingPlane]}
+        depthWrite
+        depthTest
+      />
+    </instancedMesh>
+  );
+}
+
+/** Raft jako vyhlazená alfa textura, nikoli tisíce voxelových kostek. */
+function RaftPreview({
+  preview,
+  printer,
+  cutZ,
+}: {
+  preview: SupportPreviewData;
+  printer: PrinterProfile;
+  cutZ: number;
+}) {
+  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
+  useEffect(() => {
+    const mask = preview.raftMask;
+    if (!mask || mask.length === 0) {
+      setTexture(null);
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = preview.resolutionX;
+    canvas.height = preview.resolutionY;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const img = ctx.createImageData(canvas.width, canvas.height);
+    for (let y = 0; y < canvas.height; y++) {
+      const sy = canvas.height - 1 - y;
+      for (let x = 0; x < canvas.width; x++) {
+        const on = mask[sy * canvas.width + x] !== 0;
+        const o = (y * canvas.width + x) * 4;
+        img.data[o] = 74;
+        img.data[o + 1] = 222;
+        img.data[o + 2] = 128;
+        img.data[o + 3] = on ? 255 : 0;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    setTexture(tex);
+    return () => tex.dispose();
+  }, [preview]);
+
+  const height = Math.max(
+    preview.layerHeight,
+    (preview.raftLayers ?? 1) * preview.layerHeight
+  );
+  if (!texture || cutZ + 1e-6 < height) return null;
+  return (
+    <mesh position={[0, 0, height + 0.01]} receiveShadow>
+      <planeGeometry args={[printer.printX, printer.printY]} />
+      <meshStandardMaterial
+        map={texture}
+        color="#ffffff"
+        transparent
+        alphaTest={0.35}
+        depthWrite
+        depthTest
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
+/**
+ * SLA podpory jako skutečná geometrie: patka → kuželový sloup → top segment
+ * → kontaktní bod + diagonální vzpěry. Rasterová maska zůstává pouze pro tisk.
+ */
+function SupportMesh({
+  preview,
+  printer,
+  cutZ,
+}: {
+  preview: SupportPreviewData;
+  printer: PrinterProfile;
+  cutZ: number;
+}) {
+  const sx = printer.printX / preview.resolutionX;
+  const sy = printer.printY / preview.resolutionY;
+  const mmPerPx = Math.min(sx, sy);
+  const radius = Math.max(0.08, preview.radiusPx * mmPerPx);
+  const tipRadius = Math.max(0.06, preview.tipPx * mmPerPx);
+  const bottomRadius = Math.max(radius, preview.bottomRadiusPx * mmPerPx);
+  const braceRadius = Math.max(0.06, preview.braceRadiusPx * mmPerPx);
+  const clippingPlane = useMemo(
+    () => new THREE.Plane(new THREE.Vector3(0, 0, -1), cutZ),
+    [cutZ]
+  );
+
+  const world = useCallback(
+    (x: number, y: number, layer: number): [number, number, number] => [
+      (x + 0.5) * sx - printer.printX / 2,
+      (y + 0.5) * sy - printer.printY / 2,
+      Math.max(0, (layer + 0.5) * preview.layerHeight),
+    ],
+    [sx, sy, printer.printX, printer.printY, preview.layerHeight]
+  );
+
+  const data = useMemo(() => {
+    const shafts: PreviewSegment[] = [];
+    const tops: PreviewSegment[] = [];
+    const feet: PreviewSegment[] = [];
+    const braces: PreviewSegment[] = [];
+    const tips: { p: [number, number, number]; radius: number }[] = [];
+    for (const p of preview.pillars) {
+      const base = world(p.x, p.y, 0);
+      base[2] = 0;
+      const shaftTop = world(p.x, p.y, p.top);
+      const anchor = world(p.anchorX, p.anchorY, p.anchorLayer);
+      const footH = Math.min(1.2, Math.max(preview.layerHeight, shaftTop[2] * 0.12));
+      feet.push({ a: base, b: [base[0], base[1], footH], radius: bottomRadius });
+      if (shaftTop[2] > footH) {
+        shafts.push({
+          a: [base[0], base[1], footH * 0.65],
+          b: shaftTop,
+          radius,
+        });
+      }
+      tops.push({ a: shaftTop, b: anchor, radius });
+      tips.push({ p: anchor, radius: tipRadius });
+    }
+    for (const b of preview.braces) {
+      braces.push({
+        a: world(b.x1, b.y1, b.l1),
+        b: world(b.x2, b.y2, b.l2),
+        radius: braceRadius,
+      });
+    }
+    return { shafts, tops, feet, braces, tips };
+  }, [preview, world, radius, tipRadius, bottomRadius, braceRadius]);
+
+  const shaftGeometry = useMemo(
+    () => new THREE.CylinderGeometry(1, bottomRadius / radius, 1, 14, 1, false),
+    [bottomRadius, radius]
+  );
+  const topGeometry = useMemo(
+    () => new THREE.CylinderGeometry(tipRadius / radius, 1, 1, 14, 1, false),
+    [tipRadius, radius]
+  );
+  const cylinderGeometry = useMemo(
+    () => new THREE.CylinderGeometry(1, 1, 1, 12, 1, false),
+    []
+  );
+  const tipGeometry = useMemo(() => new THREE.SphereGeometry(1, 12, 8), []);
+  useEffect(
+    () => () => {
+      shaftGeometry.dispose();
+      topGeometry.dispose();
+      cylinderGeometry.dispose();
+      tipGeometry.dispose();
+    },
+    [shaftGeometry, topGeometry, cylinderGeometry, tipGeometry]
+  );
+
+  return (
+    <>
+      <RaftPreview preview={preview} printer={printer} cutZ={cutZ} />
+      <SegmentInstances segments={data.feet} geometry={cylinderGeometry} clippingPlane={clippingPlane} color="#22c55e" />
+      <SegmentInstances segments={data.shafts} geometry={shaftGeometry} clippingPlane={clippingPlane} color="#22c55e" />
+      <SegmentInstances segments={data.tops} geometry={topGeometry} clippingPlane={clippingPlane} color="#4ade80" />
+      <SegmentInstances segments={data.braces} geometry={cylinderGeometry} clippingPlane={clippingPlane} color="#16a34a" />
+      <TipInstances tips={data.tips} geometry={tipGeometry} clippingPlane={clippingPlane} />
+    </>
   );
 }
 
@@ -365,7 +539,7 @@ export default function Viewport({
   printer,
   layerPreview,
   gizmoMode = "translate",
-  supportMask,
+  supportPreview,
 }: {
   models: ViewModel[];
   selectedId: number | null;
@@ -374,7 +548,7 @@ export default function Viewport({
   printer: PrinterProfile;
   layerPreview?: LayerPreviewData | null;
   gizmoMode?: "translate" | "rotate" | "scale";
-  supportMask?: Uint8Array[] | null;
+  supportPreview?: SupportPreviewData | null;
 }) {
   const gizmoRef = useRef<THREE.Group>(null);
   const orbitRef = useRef<any>(null);
@@ -444,13 +618,10 @@ export default function Viewport({
       <Vat printer={printer} />
       <LayerPlane preview={layerPreview ?? null} printer={printer} />
 
-      {/* podpory/raft jako zelené sloupky (zvlášť od modelu) */}
-      {supportMask && layerPreview && (
+      {/* SLA podpory jako hladké geometrické prvky; nikdy se nerekonstruují z pixelů. */}
+      {supportPreview && layerPreview && (
         <SupportMesh
-          mask={supportMask}
-          resolutionX={layerPreview.resX}
-          resolutionY={layerPreview.resY}
-          layerHeight={layerPreview.layerHeight}
+          preview={supportPreview}
           printer={printer}
           cutZ={layerPreview.z}
         />
