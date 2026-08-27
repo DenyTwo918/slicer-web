@@ -224,7 +224,10 @@ export default function Home() {
     if (h < 0.25 * Math.max(w, d)) {
       m = normalizeToPlate(autoUpright(m));
     }
-    const slot = SLOT_OFFSETS[modelsRef.current.length % SLOT_OFFSETS.length];
+    // React batchuje vícenásobný import; useEffect by se mezi soubory nestihl
+    // propsat do refu a všechny modely by dostaly stejný slot [0,0].
+    const currentModels = modelsRef.current;
+    const slot = SLOT_OFFSETS[currentModels.length % SLOT_OFFSETS.length];
     const item: ModelItem = {
       id: nextId++,
       name,
@@ -232,7 +235,9 @@ export default function Home() {
       original: m,
       transform: { ...DEFAULT_TRANSFORM, x: slot[0], y: slot[1] },
     };
-    setModels((prev) => [...prev, item]);
+    const nextModels = [...currentModels, item];
+    modelsRef.current = nextModels;
+    setModels(nextModels);
     setSelectedId(item.id);
     setSliceResult(null);
     setSupportPreview(null);
@@ -283,6 +288,7 @@ export default function Home() {
   }, [addModel]);
 
   const clearAll = useCallback(() => {
+    modelsRef.current = [];
     setModels([]);
     setSelectedId(null);
     setSliceResult(null);
@@ -371,7 +377,11 @@ export default function Home() {
   const selected = models.find((m) => m.id === selectedId) ?? null;
 
   const updateModel = useCallback((id: number, fn: (m: ModelItem) => ModelItem) => {
-    setModels((prev) => prev.map((m) => (m.id === id ? fn(m) : m)));
+    setModels((prev) => {
+      const next = prev.map((m) => (m.id === id ? fn(m) : m));
+      modelsRef.current = next;
+      return next;
+    });
     setSliceResult(null);
     setSupportPreview(null);
     setLastExport(null);
@@ -438,7 +448,11 @@ export default function Home() {
 
   const removeSel = useCallback(() => {
     if (selectedId === null) return;
-    setModels((prev) => prev.filter((m) => m.id !== selectedId));
+    setModels((prev) => {
+      const next = prev.filter((m) => m.id !== selectedId);
+      modelsRef.current = next;
+      return next;
+    });
     setSelectedId(null);
     setSliceResult(null);
     setSupportPreview(null);
@@ -447,7 +461,11 @@ export default function Home() {
 
   const removeModel = useCallback(
     (id: number) => {
-      setModels((prev) => prev.filter((m) => m.id !== id));
+      setModels((prev) => {
+        const next = prev.filter((m) => m.id !== id);
+        modelsRef.current = next;
+        return next;
+      });
       if (selectedId === id) setSelectedId(null);
       setSliceResult(null);
       setSupportPreview(null);
@@ -466,7 +484,11 @@ export default function Home() {
       name: item.name + " (kopie)",
       transform: { ...item.transform, x: item.transform.x + 30, y: item.transform.y + 30 },
     };
-    setModels((prev) => [...prev, copy]);
+    setModels((prev) => {
+      const next = [...prev, copy];
+      modelsRef.current = next;
+      return next;
+    });
     setSelectedId(copy.id);
     setSliceResult(null);
     setSupportPreview(null);
@@ -993,12 +1015,14 @@ const doSlice = useCallback(async () => {
   );
 
   const arrangeAll = useCallback(() => {
-    setModels((prev) =>
-      prev.map((m, i) => {
+    setModels((prev) => {
+      const next = prev.map((m, i) => {
         const s = SLOT_OFFSETS[i % SLOT_OFFSETS.length];
         return { ...m, transform: { ...m.transform, x: s[0], y: s[1] } };
-      })
-    );
+      });
+      modelsRef.current = next;
+      return next;
+    });
     setSliceResult(null);
     setSupportPreview(null);
     setLastExport(null);
