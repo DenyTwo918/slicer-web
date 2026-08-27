@@ -46,7 +46,7 @@ import {
 interface ModelItem {
   id: number;
   name: string;
-  mesh: StlMesh; // aktuďż˝lnďż˝ data (rotace/scale aplikovanďż˝)
+  mesh: StlMesh; // aktuální data (rotace/scale aplikované)
   original: StlMesh;
   transform: ModelTransform; // pozice na desce
 }
@@ -114,7 +114,7 @@ const SLOT_OFFSETS: [number, number][] = [
 
 let nextId = 1;
 
-/** Akordeon sekce levďż˝ navigace. */
+/** Akordeon sekce levé navigace. */
 function SideSec({
   label,
   open,
@@ -130,7 +130,7 @@ function SideSec({
     <div className={`side-sec ${open ? "open" : ""}`}>
       <button className="side-sec-head" onClick={onToggle}>
         <span>{label}</span>
-        <span className="side-caret">{open ? "?" : "?"}</span>
+        <span className="side-caret">{open ? "▾" : "▸"}</span>
       </button>
       {open && <div className="side-sec-body">{children}</div>}
     </div>
@@ -169,8 +169,8 @@ export default function Home() {
   const [supportMask, setSupportMask] = useState<Uint8Array[] | null>(null);
 
   /**
-   * Jedinďż˝ zpďż˝sob, jak mďż˝nit nastavenďż˝: jakďż˝koliv zmďż˝na ZRUďż˝ďż˝ nďż˝hled tisku
-   * (starďż˝ vďż˝sledek uďż˝ neodpovďż˝dďż˝ nastavenďż˝). Modely zďż˝stďż˝vajďż˝ zachovanďż˝.
+   * Jediný způsob, jak měnit nastavení: jakákoliv změna ZRUŠÍ náhled tisku
+   * (starý výsledek už neodpovídá nastavení). Modely zůstávají zachované.
    */
   const updateSettings = useCallback((updater: (s: SliceSettings) => SliceSettings) => {
     setSettings(updater);
@@ -179,6 +179,7 @@ export default function Home() {
     setSliceIdx(0);
     setLastExport(null);
   }, []);
+
   const [sliceIdx, setSliceIdx] = useState(0);
   const [slicing, setSlicing] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -207,7 +208,7 @@ export default function Home() {
   const addModel = useCallback((mesh: StlMesh, name: string) => {
     // postavit na desku (minZ = 0)
     let m = translateMesh(mesh, 0, 0, -mesh.bounds.min[2]);
-    // automaticky postavit nastojato, pokud je model plochďż˝ (leďż˝ďż˝ na podloďż˝ce)
+    // automaticky postavit nastojato, pokud je model plochý (leží na podložce)
     const w = m.bounds.max[0] - m.bounds.min[0];
     const d = m.bounds.max[1] - m.bounds.min[1];
     const h = m.bounds.max[2] - m.bounds.min[2];
@@ -225,10 +226,10 @@ export default function Home() {
     setModels((prev) => [...prev, item]);
     setSelectedId(item.id);
     setSliceResult(null);
-    showToast("ok", `Model pďż˝idďż˝n ? ďż˝ ${name}`);
+    showToast("ok", `Model přidán ✓ · ${name}`);
   }, []);
 
-  // ref na aktuďż˝lnďż˝ modely (pro addModel bez zďż˝vislosti)
+  // ref na aktuální modely (pro addModel bez závislosti)
   const modelsRef = useRef<ModelItem[]>([]);
   useEffect(() => {
     modelsRef.current = models;
@@ -248,7 +249,7 @@ export default function Home() {
           }
           addModel(m, file.name);
         } catch (e) {
-          showToast("err", e instanceof Error ? e.message : "Nepodaďż˝ilo se naďż˝ďż˝st soubor.", 8000);
+          showToast("err", e instanceof Error ? e.message : "Nepodařilo se načíst soubor.", 8000);
         }
       }
       setLoading(false);
@@ -264,7 +265,7 @@ export default function Home() {
       const mesh = parseStl(await res.arrayBuffer());
       addModel(mesh, "3DBenchy");
     } catch (e) {
-      showToast("err", e instanceof Error ? e.message : "Nepodaďż˝ilo se naďż˝ďż˝st Benchy.", 8000);
+      showToast("err", e instanceof Error ? e.message : "Nepodařilo se načíst Benchy.", 8000);
     } finally {
       setLoading(false);
     }
@@ -275,7 +276,7 @@ export default function Home() {
     setSelectedId(null);
     setSliceResult(null);
     setLastExport(null);
-    showToast("ok", "Vďż˝e smazďż˝no");
+    showToast("ok", "Vše smazáno");
   }, []);
 
   const [light, setLight] = useState(false);
@@ -310,6 +311,12 @@ export default function Home() {
   const resin = getResin(resinId);
   const film = getFilm(filmId);
 
+  // uložení poslední volby (tiskárna / pryskyřice / fólie / nastavení)
+  useEffect(() => {
+    saveProfile({ printerId, resinId, filmId, settings });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [printerId, resinId, filmId, settings]);
+
   // změna tiskárny = jiné rozlišení → zneplatnit náhled (modely zůstávají)
   const lastPrinterId = useRef(printerId);
   useEffect(() => {
@@ -320,12 +327,6 @@ export default function Home() {
       setLastExport(null);
     }
   }, [printerId]);
-
-  // uložení poslední volby (tiskárna / pryskyřice / fólie / nastavení)
-  useEffect(() => {
-    saveProfile({ printerId, resinId, filmId, settings });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [printerId, resinId, filmId, settings]);
 
   const selectResin = useCallback(
     (id: string) => {
@@ -409,7 +410,7 @@ export default function Home() {
     const best = findBestOrientation(item.mesh, 15);
     const rotated = orientRotate(item.mesh, best.rx, best.ry, best.rz);
     updateModel(selectedId, (m) => ({ ...m, mesh: normalizeToPlate(rotated) }));
-    showToast("ok", `Model natoďż˝en ? (X ${best.rx}ďż˝, Y ${best.ry}ďż˝)`);
+    showToast("ok", `Model natočen ✓ (X ${best.rx}°, Y ${best.ry}°)`);
   }, [selectedId, models, updateModel]);
 
   const standUpSel = useCallback(() => {
@@ -418,7 +419,7 @@ export default function Home() {
     if (!item) return;
     const upright = normalizeToPlate(autoUpright(item.mesh));
     updateModel(selectedId, (m) => ({ ...m, mesh: upright }));
-    showToast("ok", "Model postaven nastojato ?");
+    showToast("ok", "Model postaven nastojato ✓");
   }, [selectedId, models, updateModel]);
 
   const removeSel = useCallback(() => {
@@ -450,7 +451,7 @@ export default function Home() {
     setModels((prev) => [...prev, copy]);
     setSelectedId(copy.id);
     setSliceResult(null);
-    showToast("ok", "Model duplikovďż˝n ?");
+    showToast("ok", "Model duplikován ✓");
   }, [selectedId, models]);
 
   const downloadSelStl = useCallback(() => {
@@ -487,10 +488,10 @@ export default function Home() {
       v.setUint16(off + 48, 0, true);
     }
     downloadBytes(new Uint8Array(buf), (selected.name.replace(/\.[^.]+$/, "") || "model") + ".stl");
-    showToast("ok", "STL staďż˝en ?");
+    showToast("ok", "STL stažen ✓");
   }, [selected]);
 
-/** Slicovacďż˝ worker ďż˝ singleton. Bďż˝ďż˝ mimo hlavnďż˝ vlďż˝kno ďż˝ UI nezamrzne. */
+/** Slicovací worker — singleton. Běží mimo hlavní vlákno → UI nezamrzne. */
 let sliceWorker: Worker | null = null;
 let sliceSeq = 0;
 
@@ -501,7 +502,7 @@ function getSliceWorker(): Worker {
   return sliceWorker;
 }
 
-/** Nďż˝hledovďż˝ PNG vygenerovanďż˝ na hlavnďż˝m vlďż˝knďż˝ (canvas). */
+/** Náhledové PNG vygenerované na hlavním vlákně (canvas). */
 async function genPreviewBytes(
   slice: SliceResult,
   layerIdx: number,
@@ -513,7 +514,7 @@ async function genPreviewBytes(
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 2D nenďż˝ dostupnďż˝.");
+  if (!ctx) throw new Error("Canvas 2D není dostupné.");
   ctx.fillStyle = "#052636";
   ctx.fillRect(0, 0, w, h);
   const sx = w / slice.resolutionX;
@@ -562,7 +563,7 @@ function exportFullInWorker(
         if (typeof msg.done === "number" && typeof msg.total === "number") {
           onProgress(msg.done, msg.total);
         }
-        return; // progress nezavďż˝rďż˝ handler
+        return; // progress nezavírá handler
       }
       worker.removeEventListener("message", handler);
       if (msg.ok && msg.bytes) resolve(msg.bytes);
@@ -594,7 +595,7 @@ function exportFullInWorker(
         raft: settings.raft,
         raftLayers: settings.raftLayers,
         raftMarginMm: settings.raftMarginMm,
-        aa: false, // full-res: AA se nepouďż˝ďż˝vďż˝ (nativnďż˝ pixely)
+        aa: false, // full-res: AA se nepoužívá (nativní pixely)
       } satisfies PipelineSettings,
       printer: {
         resX: printer.resX,
@@ -609,8 +610,8 @@ function exportFullInWorker(
 }
 
 /**
- * Spustďż˝ slicovďż˝nďż˝ ve workeru. Vrstvy se pďż˝enesou pďż˝es transfer (bez kopie).
- * Pokud worker selďż˝e (CSP apod.), spadne na synchronnďż˝ CPU pipeline (fallback).
+ * Spustí slicování ve workeru. Vrstvy se přenesou přes transfer (bez kopie).
+ * Pokud worker selže (CSP apod.), spadne na synchronní CPU pipeline (fallback).
  */
 function sliceInWorker(
   models: ModelItem[],
@@ -657,7 +658,7 @@ function sliceInWorker(
     try {
       worker = getSliceWorker();
     } catch {
-      // worker nenďż˝ dostupnďż˝ ďż˝ synchronnďż˝ fallback na hlavnďż˝m vlďż˝knďż˝
+      // worker není dostupný → synchronní fallback na hlavním vlákně
       try {
         resolve(runSlicePipeline(payload.models, payload.settings, payload.printer));
       } catch (e) {
@@ -671,7 +672,7 @@ function sliceInWorker(
       if (msg.ok && msg.result) {
         resolve({ result: msg.result, supportMask: msg.supportMask ?? null, engine: msg.engine ?? "cpu" });
       } else {
-        reject(new Error(msg.error ?? "Slicovďż˝nďż˝ selhalo."));
+        reject(new Error(msg.error ?? "Slicování selhalo."));
       }
     };
     worker.addEventListener("message", handler);
@@ -687,10 +688,10 @@ const doSlice = useCallback(async () => {
     if (result) {
       setSliceResult(result);
       setSupportMask(sm);
-      // zaďż˝ni od hornďż˝ vrstvy ďż˝ model je v 3D vidďż˝t celďż˝, tahem slideru dolďż˝ vidďż˝ ďż˝ez
+      // začni od horní vrstvy → model je v 3D vidět celý, tahem slideru dolů vidíš řez
       setSliceIdx(Math.max(0, result.layers.length - 1));
       if (typeof window !== "undefined") {
-        // debug hook pro headless testy (hash + pixelovďż˝ poďż˝ty vzorkďż˝ pro porovnďż˝nďż˝ GPU/CPU)
+        // debug hook pro headless testy (hash + pixelové počty vzorků pro porovnání GPU/CPU)
         const fnv = (a: Uint8Array, h: number) => {
           for (let i = 0; i < a.length; i++) h = ((h ^ a[i]) * 16777619) >>> 0;
           return h;
@@ -721,11 +722,11 @@ const doSlice = useCallback(async () => {
       }
       showToast(
         "ok",
-        `Naslicovďż˝no ? ďż˝ ${result.layers.length} vrstev ďż˝ ${result.layerHeight} mm${settings.supports ? " ďż˝ podpory" : ""}${settings.aa ? " ďż˝ AA" : ""}`
+        `Naslicováno ✓ · ${result.layers.length} vrstev · ${result.layerHeight} mm${settings.supports ? " · podpory" : ""}${settings.aa ? " · AA" : ""}`
       );
     }
   } catch (e) {
-    showToast("err", e instanceof Error ? e.message : "Slicovďż˝nďż˝ selhalo.", 8000);
+    showToast("err", e instanceof Error ? e.message : "Slicování selhalo.", 8000);
   } finally {
     setSlicing(false);
   }
@@ -749,7 +750,7 @@ const doSlice = useCallback(async () => {
 
   const buildExport = useCallback(async (): Promise<{ bytes: Uint8Array; name: string } | null> => {
     if (!sliceResult || models.length === 0) return null;
-    // nďż˝hledovďż˝ PNG (generuje hlavnďż˝ vlďż˝kno z canvasu)
+    // náhledová PNG (generuje hlavní vlákno z canvasu)
     const previews = await Promise.all([
       genPreviewBytes(sliceResult, 0, 224, 168),
       genPreviewBytes(
@@ -759,7 +760,7 @@ const doSlice = useCallback(async () => {
         168
       ),
     ]);
-    // export Vďż˝DY v nativnďż˝m rozliďż˝enďż˝ tiskďż˝rny (full-res streaming ve workeru)
+    // export VŽDY v nativním rozlišení tiskárny (full-res streaming ve workeru)
     try {
       const bytes = await exportFullInWorker(models, settings, printer, {
         bottomExposure: settings.bottomExposure,
@@ -777,7 +778,7 @@ const doSlice = useCallback(async () => {
       return { bytes, name: `${exportName}.${printer.keySuffix}` };
     } catch (e) {
       setExportProgress(null);
-      showToast("err", "Full-res export selhal ďż˝ zďż˝loďż˝nďż˝ v nďż˝hledovďż˝m rozliďż˝enďż˝.", 6000);
+      showToast("err", "Full-res export selhal → záložně v náhledovém rozlišení.", 6000);
       const bytes = await buildPm7(
         models.map((m) => applyTransform(m.mesh, m.transform)),
         sliceResult,
@@ -804,7 +805,7 @@ const doSlice = useCallback(async () => {
       if (!ex) return;
       downloadBytes(ex.bytes, ex.name);
       setLastExport(ex);
-      showToast("ok", "Soubor .pm7 staďż˝en ? ďż˝ USB: koďż˝en disku, ?15 znakďż˝, FAT32", 10000);
+      showToast("ok", "Soubor .pm7 stažen ✓ · USB: kořen disku, ≤15 znaků, FAT32", 10000);
     } catch (e) {
       showToast("err", e instanceof Error ? e.message : "Export .pm7 selhal.", 8000);
     } finally {
@@ -816,19 +817,19 @@ const doSlice = useCallback(async () => {
     if (models.length === 0) return;
     setSending(true);
     try {
-      // 1) slicovat, pokud jeďż˝tďż˝ nenďż˝
+      // 1) slicovat, pokud ještě není
       if (!sliceResult) {
-        showToast("ok", "Slicujiďż˝", 3000);
+        showToast("ok", "Slicuji…", 3000);
         const { result, supportMask: sm } = await sliceInWorker(models, settings, printer);
         if (!result) {
-          showToast("err", "Slicovďż˝nďż˝ selhalo.", 8000);
+          showToast("err", "Slicování selhalo.", 8000);
           return;
         }
         setSupportMask(sm);
         setSliceResult(result);
         setSliceIdx(0);
       }
-      // 2) pďż˝ipravit soubor v pamďż˝ti (bez staďż˝enďż˝)
+      // 2) připravit soubor v paměti (bez stažení)
       const ex = await buildExport();
       if (!ex) return;
       setLastExport(ex);
@@ -836,24 +837,24 @@ const doSlice = useCallback(async () => {
       let jwt = getStoredJwt();
       if (!jwt) {
         const input = prompt(
-          "Vloďż˝ Anycubic access token.\n" +
-            "(najdeďż˝ ho na PC v AppData\\Local\\Anycubic\\AnycubicPhotonWorkshop_V4.1.8\\global_config.ini, ďż˝ďż˝dek accessToken=...)"
+          "Vlož Anycubic access token.\n" +
+            "(najdeš ho na PC v AppData\\Local\\Anycubic\\AnycubicPhotonWorkshop_V4.1.8\\global_config.ini, řádek accessToken=...)"
         );
         if (!input) return;
         jwt = input.trim();
         setStoredJwt(jwt);
       }
-      // 4) poslat do tiskďż˝rny
+      // 4) poslat do tiskárny
       const fileId = await sendPrintToPrinter(ex.bytes, ex.name, jwt, (msg) =>
         showToast("ok", msg, 6000)
       );
       showToast(
         "ok",
-        `Soubor poslďż˝n do tiskďż˝rny ? (file ${fileId}) ďż˝ tiskďż˝rna stahuje ďż˝ tisk potvrďż˝ na displeji tiskďż˝rny`,
+        `Soubor poslán do tiskárny ✓ (file ${fileId}) · tiskárna stahuje · tisk potvrď na displeji tiskárny`,
         15000
       );
     } catch (e) {
-      showToast("err", e instanceof Error ? e.message : "Odeslďż˝nďż˝ do tiskďż˝rny selhalo.", 10000);
+      showToast("err", e instanceof Error ? e.message : "Odeslání do tiskárny selhalo.", 10000);
     } finally {
       setSending(false);
     }
@@ -862,7 +863,7 @@ const doSlice = useCallback(async () => {
   const centerSel = useCallback(() => {
     if (!selectedId) return;
     updateModel(selectedId, (m) => ({ ...m, transform: { ...m.transform, x: 0, y: 0 } }));
-    showToast("ok", "Model vycentrovďż˝n ?");
+    showToast("ok", "Model vycentrován ✓");
   }, [selectedId, updateModel]);
 
   const mirrorSel = useCallback(
@@ -872,7 +873,7 @@ const doSlice = useCallback(async () => {
         ...m,
         mesh: normalizeToPlate(mirrorMesh(m.mesh, axis)),
       }));
-      showToast("ok", `Model zrcadlen podle ${axis.toUpperCase()} ?`);
+      showToast("ok", `Model zrcadlen podle ${axis.toUpperCase()} ✓`);
     },
     [selectedId, updateModel]
   );
@@ -888,7 +889,7 @@ const doSlice = useCallback(async () => {
     [selectedId, updateModel]
   );
 
-  /** Gyro (rotate/scale) ďż˝ zapďż˝e rotaci/mďż˝ďż˝ďż˝tko do dat modelu po taďż˝enďż˝. */
+  /** Gyro (rotate/scale) — zapíše rotaci/měřítko do dat modelu po tažení. */
   const bakeTransform = useCallback(
     (id: number, rotation: { rx: number; ry: number; rz: number }, scale: number) => {
       updateModel(id, (m) => {
@@ -911,7 +912,7 @@ const doSlice = useCallback(async () => {
       })
     );
     setSliceResult(null);
-    showToast("ok", "Modely rozmďż˝stďż˝ny ?");
+    showToast("ok", "Modely rozmístěny ✓");
   }, []);
 
   const screenshot3d = useCallback(() => {
@@ -922,9 +923,9 @@ const doSlice = useCallback(async () => {
       a.href = canvas.toDataURL("image/png");
       a.download = "slicer-3d.png";
       a.click();
-      showToast("ok", "Screenshot 3D staďż˝en ?");
+      showToast("ok", "Screenshot 3D stažen ✓");
     } catch {
-      showToast("err", "Screenshot se nepodaďż˝il.", 6000);
+      showToast("err", "Screenshot se nepodařil.", 6000);
     }
   }, []);
 
@@ -970,7 +971,7 @@ const doSlice = useCallback(async () => {
   const fmtCost = (ml: number) =>
     `$${(((ml * (resin.price ?? 220)) / 1000)).toFixed(2)}`;
 
-  // klďż˝vesovďż˝ zkratky
+  // klávesové zkratky
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
@@ -1007,23 +1008,23 @@ const doSlice = useCallback(async () => {
         </div>
         <div className="actions">
           <button className="btn btn-small btn-primary" onClick={() => fileRef.current?.click()}>
-            Pďż˝idat modelďż˝
+            Přidat model…
           </button>
           <button className="btn btn-small btn-ghost" onClick={loadBenchy}>
             Benchy
           </button>
           {selectedId !== null && (
             <button className="btn btn-small btn-danger" onClick={removeSel}>
-              Smazat vybranďż˝
+              Smazat vybraný
             </button>
           )}
           {models.length > 0 && (
             <button className="btn btn-small btn-danger" onClick={clearAll}>
-              Smazat vďż˝e
+              Smazat vše
             </button>
           )}
           <button className="btn btn-small btn-ghost" onClick={() => setLight((l) => !l)}>
-            {light ? "Tmavďż˝" : "Svďż˝tlďż˝"}
+            {light ? "Tmavý" : "Světlý"}
           </button>
         </div>
       </header>
@@ -1045,60 +1046,60 @@ const doSlice = useCallback(async () => {
         <div className="side-panel">
           <div className="side-title">Modely</div>
           {models.length === 0 ? (
-            <p className="side-empty">Pďż˝idej model ďż˝ ďż˝Pďż˝idat model" nahoďż˝e, nebo pďż˝etďż˝hni soubor sem.</p>
+            <p className="side-empty">Přidej model — „Přidat model" nahoře, nebo přetáhni soubor sem.</p>
           ) : (
             <div className="side-models">
               {models.map((m) => (
                 <div key={m.id} className={`side-model ${m.id === selectedId ? "active" : ""}`}>
-                  <button className="chip-name" onClick={() => setSelectedId(m.id)} title="Klikni pro vďż˝bďż˝r">
+                  <button className="chip-name" onClick={() => setSelectedId(m.id)} title="Klikni pro výběr">
                     {m.name}
                   </button>
                   <button className="chip-x" onClick={() => removeModel(m.id)} title="Odebrat model">
-                    ďż˝
+                    ×
                   </button>
                 </div>
               ))}
             </div>
           )}
 
-          <div className="side-title">Nďż˝stroje</div>
+          <div className="side-title">Nástroje</div>
           <div className="tool-row">
             <button
               className={`tool-btn ${gizmoMode === "translate" ? "active" : ""}`}
               onClick={() => setGizmoMode("translate")}
               disabled={!selected}
             >
-              Pďż˝esun
+              Přesun
             </button>
             <button
               className={`tool-btn ${gizmoMode === "rotate" ? "active" : ""}`}
               onClick={() => setGizmoMode("rotate")}
               disabled={!selected}
             >
-              Otoďż˝enďż˝
+              Otočení
             </button>
             <button
               className={`tool-btn ${gizmoMode === "scale" ? "active" : ""}`}
               onClick={() => setGizmoMode("scale")}
               disabled={!selected}
             >
-              Mďż˝ďż˝ďż˝tko
+              Měřítko
             </button>
           </div>
-          <p className="mp-hint">Aktivnďż˝ nďż˝stroj = gyro na modelu ďż˝ tďż˝hni pďż˝ďż˝mo ve 3D.</p>
+          <p className="mp-hint">Aktivní nástroj = gyro na modelu — táhni přímo ve 3D.</p>
 
           <SideSec
-            label="Model (dalďż˝ďż˝)"
+            label="Model (další)"
             open={openSec === "model"}
             onToggle={() => setOpenSec(openSec === "model" ? "" : "model")}
           >
             <div className="mp-row">
               <button className="mp-btn" onClick={orientSel}>Narovnej</button>
               <button className="mp-btn" onClick={standUpSel}>Postav</button>
-              <button className="mp-btn" onClick={resetSel}>Vraďż˝</button>
+              <button className="mp-btn" onClick={resetSel}>Vrať</button>
               <button className="mp-btn" onClick={duplicateSel}>Duplikovat</button>
               <button className="mp-btn" onClick={centerSel}>Centrovat</button>
-              <button className="mp-btn mp-danger" onClick={removeSel}>Smaďż˝</button>
+              <button className="mp-btn mp-danger" onClick={removeSel}>Smaž</button>
             </div>
             <div className="mp-row">
               <button className="mp-btn" onClick={() => mirrorSel("x")}>Zrcad X</button>
@@ -1107,7 +1108,7 @@ const doSlice = useCallback(async () => {
               <button className="mp-btn" onClick={downloadSelStl}>STL</button>
               <button className="mp-btn" onClick={screenshot3d}>Foto</button>
               {models.length > 1 && (
-                <button className="mp-btn" onClick={arrangeAll}>Rozmďż˝stit</button>
+                <button className="mp-btn" onClick={arrangeAll}>Rozmístit</button>
               )}
             </div>
           </SideSec>
@@ -1123,12 +1124,12 @@ const doSlice = useCallback(async () => {
                 checked={settings.supports}
                 onChange={(e) => updateSettings((s) => ({ ...s, supports: e.target.checked }))}
               />
-              <span>Automatickďż˝ podpory</span>
+              <span>Automatické podpory</span>
             </label>
             {settings.supports && (
               <>
                 <label className="set-row">
-                  <span>O podpory (mm)</span>
+                  <span>Ø podpory (mm)</span>
                   <input
                     type="number"
                     step={0.1}
@@ -1138,7 +1139,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>ďż˝piďż˝ka (mm)</span>
+                  <span>Špička (mm)</span>
                   <input
                     type="number"
                     step={0.1}
@@ -1148,7 +1149,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>Max ďż˝hel podhledu (ďż˝)</span>
+                  <span>Max úhel podhledu (°)</span>
                   <input
                     type="number"
                     step={5}
@@ -1170,7 +1171,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>Min. vďż˝ďż˝ka od desky (mm)</span>
+                  <span>Min. výška od desky (mm)</span>
                   <input
                     type="number"
                     step={0.5}
@@ -1185,7 +1186,7 @@ const doSlice = useCallback(async () => {
           </SideSec>
 
           <SideSec
-            label="Hollowing (dutďż˝ model)"
+            label="Hollowing (dutý model)"
             open={openSec === "hollow"}
             onToggle={() => setOpenSec(openSec === "hollow" ? "" : "hollow")}
           >
@@ -1195,12 +1196,12 @@ const doSlice = useCallback(async () => {
                 checked={settings.hollow}
                 onChange={(e) => updateSettings((s) => ({ ...s, hollow: e.target.checked }))}
               />
-              <span>Dutďż˝ model</span>
+              <span>Dutý model</span>
             </label>
             {settings.hollow && (
               <>
                 <label className="set-row">
-                  <span>Stďż˝na (mm)</span>
+                  <span>Stěna (mm)</span>
                   <input
                     type="number"
                     step={0.5}
@@ -1210,7 +1211,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>Otvory O (mm)</span>
+                  <span>Otvory Ø (mm)</span>
                   <input
                     type="number"
                     step={0.5}
@@ -1225,14 +1226,14 @@ const doSlice = useCallback(async () => {
                     checked={settings.drainHoles}
                     onChange={(e) => updateSettings((s) => ({ ...s, drainHoles: e.target.checked }))}
                   />
-                  <span>Odvodďż˝ovacďż˝ otvory</span>
+                  <span>Odvodňovací otvory</span>
                 </label>
               </>
             )}
           </SideSec>
 
           <SideSec
-            label="Raft (zďż˝kladna)"
+            label="Raft (základna)"
             open={openSec === "raft"}
             onToggle={() => setOpenSec(openSec === "raft" ? "" : "raft")}
           >
@@ -1257,7 +1258,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>Pďż˝esah (mm)</span>
+                  <span>Přesah (mm)</span>
                   <input
                     type="number"
                     min={1}
@@ -1275,7 +1276,7 @@ const doSlice = useCallback(async () => {
               className={`btn btn-small ${showSettings ? "btn-primary" : "btn-ghost"}`}
               onClick={() => setShowSettings((s) => !s)}
             >
-              Nastavenďż˝
+              Nastavení
             </button>
             <button
               className={`btn btn-small ${showInfo ? "btn-primary" : "btn-ghost"}`}
@@ -1293,9 +1294,9 @@ const doSlice = useCallback(async () => {
               disabled={sending || exporting || (slicing && !sliceResult)}
             >
               {sending
-                ? "Posďż˝lďż˝mďż˝"
+                ? "Posílám…"
                 : slicing && !sliceResult
-                ? "Slicujiďż˝"
+                ? "Slicuji…"
                 : sliceResult
                 ? "Tisknout"
                 : "Slicovat"}
@@ -1304,9 +1305,9 @@ const doSlice = useCallback(async () => {
               className="btn btn-small btn-ghost fab-usb"
               onClick={exportPm7}
               disabled={exporting}
-              title={`Uloďż˝it soubor na USB (staďż˝enďż˝ .pm7 v nativnďż˝m ${printer.resX}ďż˝${printer.resY})`}
+              title={`Uložit soubor na USB (stažení .pm7 v nativním ${printer.resX}×${printer.resY})`}
             >
-              {exporting ? "ďż˝" : "USB"}
+              {exporting ? "…" : "USB"}
             </button>
             {exportProgress && (
               <div className="fab-progress">12K export {exportProgress}</div>
@@ -1316,9 +1317,9 @@ const doSlice = useCallback(async () => {
 
         {showSettings && (
           <div className="info-panel settings">
-            <div className="info-title">Nastavenďż˝ tisku</div>
+            <div className="info-title">Nastavení tisku</div>
             <label className="set-row">
-              <span>Tiskďż˝rna</span>
+              <span>Tiskárna</span>
               <select
                 value={printerId}
                 onChange={(e) => {
@@ -1334,7 +1335,7 @@ const doSlice = useCallback(async () => {
               </select>
             </label>
             <label className="set-row">
-              <span>Pryskyďż˝ice</span>
+              <span>Pryskyřice</span>
               <select value={resinId} onChange={(e) => selectResin(e.target.value)}>
                 {RESINS.map((r) => (
                   <option key={r.id} value={r.id}>
@@ -1344,7 +1345,7 @@ const doSlice = useCallback(async () => {
               </select>
             </label>
             <label className="set-row">
-              <span>Fďż˝lie</span>
+              <span>Fólie</span>
               <select value={filmId} onChange={(e) => selectFilm(e.target.value)}>
                 {FILMS.map((f) => (
                   <option key={f.id} value={f.id}>
@@ -1353,9 +1354,9 @@ const doSlice = useCallback(async () => {
                 ))}
               </select>
             </label>
-            <p className="info-note">Poslednďż˝ volba se pamatuje i po zavďż˝enďż˝ strďż˝nky.</p>
+            <p className="info-note">Poslední volba se pamatuje i po zavření stránky.</p>
             <label className="set-row">
-              <span>Nďż˝zev tisku</span>
+              <span>Název tisku</span>
               <input
                 type="text"
                 maxLength={12}
@@ -1366,9 +1367,9 @@ const doSlice = useCallback(async () => {
               />
             </label>
             <details open>
-              <summary>Zďż˝kladnďż˝</summary>
+              <summary>Základní</summary>
             <label className="set-row">
-              <span>Vďż˝ďż˝ka vrstvy</span>
+              <span>Výška vrstvy</span>
               <select
                 value={settings.layerHeight}
                 onChange={(e) => updateSettings((s) => ({ ...s, layerHeight: Number(e.target.value) }))}
@@ -1380,7 +1381,7 @@ const doSlice = useCallback(async () => {
               </select>
             </label>
             <label className="set-row">
-              <span>Prvnďż˝ vrstvy</span>
+              <span>První vrstvy</span>
               <input
                 type="number"
                 min={1}
@@ -1400,7 +1401,7 @@ const doSlice = useCallback(async () => {
               />
             </label>
             <label className="set-row">
-              <span>Expozice bďż˝nďż˝ (s)</span>
+              <span>Expozice běžná (s)</span>
               <input
                 type="number"
                 min={0.5}
@@ -1418,12 +1419,12 @@ const doSlice = useCallback(async () => {
                 checked={settings.supports}
                 onChange={(e) => updateSettings((s) => ({ ...s, supports: e.target.checked }))}
               />
-              <span>Automatickďż˝ podpory</span>
+              <span>Automatické podpory</span>
             </label>
             {settings.supports && (
               <>
                 <label className="set-row">
-                  <span>Podpory O (mm)</span>
+                  <span>Podpory Ø (mm)</span>
                   <input
                     type="number"
                     step={0.1}
@@ -1433,7 +1434,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>ďż˝piďż˝ka podpory (mm)</span>
+                  <span>Špička podpory (mm)</span>
                   <input
                     type="number"
                     step={0.1}
@@ -1443,7 +1444,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>Max ďż˝hel podhledu (ďż˝)</span>
+                  <span>Max úhel podhledu (°)</span>
                   <input
                     type="number"
                     step={5}
@@ -1465,7 +1466,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>Min. vďż˝ďż˝ka od desky (mm)</span>
+                  <span>Min. výška od desky (mm)</span>
                   <input
                     type="number"
                     step={0.5}
@@ -1493,12 +1494,12 @@ const doSlice = useCallback(async () => {
                 checked={settings.hollow}
                 onChange={(e) => updateSettings((s) => ({ ...s, hollow: e.target.checked }))}
               />
-              <span>Hollowing (dutďż˝ model)</span>
+              <span>Hollowing (dutý model)</span>
             </label>
             {settings.hollow && (
               <>
                 <label className="set-row">
-                  <span>Stďż˝na (mm)</span>
+                  <span>Stěna (mm)</span>
                   <input
                     type="number"
                     step={0.5}
@@ -1508,7 +1509,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>Otvory O (mm)</span>
+                  <span>Otvory Ø (mm)</span>
                   <input
                     type="number"
                     step={0.5}
@@ -1523,7 +1524,7 @@ const doSlice = useCallback(async () => {
                     checked={settings.drainHoles}
                     onChange={(e) => updateSettings((s) => ({ ...s, drainHoles: e.target.checked }))}
                   />
-                  <span>Odvodďż˝ovacďż˝ otvory</span>
+                  <span>Odvodňovací otvory</span>
                 </label>
               </>
             )}
@@ -1536,7 +1537,7 @@ const doSlice = useCallback(async () => {
                 checked={settings.raft}
                 onChange={(e) => updateSettings((s) => ({ ...s, raft: e.target.checked }))}
               />
-              <span>Raft (zďż˝kladna)</span>
+              <span>Raft (základna)</span>
             </label>
             {settings.raft && (
               <>
@@ -1551,7 +1552,7 @@ const doSlice = useCallback(async () => {
                   />
                 </label>
                 <label className="set-row">
-                  <span>Raft pďż˝esah (mm)</span>
+                  <span>Raft přesah (mm)</span>
                   <input
                     type="number"
                     min={1}
@@ -1564,9 +1565,9 @@ const doSlice = useCallback(async () => {
             )}
             </details>
             <details>
-              <summary>Zvedďż˝nďż˝</summary>
+              <summary>Zvedání</summary>
             <label className="set-row">
-              <span>Zvednutďż˝ (mm)</span>
+              <span>Zvednutí (mm)</span>
               <input
                 type="number"
                 step={0.1}
@@ -1576,7 +1577,7 @@ const doSlice = useCallback(async () => {
               />
             </label>
             <label className="set-row">
-              <span>Rychlost zvedďż˝nďż˝</span>
+              <span>Rychlost zvedání</span>
               <input
                 type="number"
                 step={0.5}
@@ -1586,7 +1587,7 @@ const doSlice = useCallback(async () => {
               />
             </label>
             <label className="set-row">
-              <span>Zvednutďż˝ 1. vrstev</span>
+              <span>Zvednutí 1. vrstev</span>
               <input
                 type="number"
                 step={0.1}
@@ -1607,8 +1608,8 @@ const doSlice = useCallback(async () => {
             </label>
             </details>
             <p className="info-note">
-              Zkratky: O narovnej ďż˝ S slicuj ďż˝ E export ďż˝ P poslat ďż˝ D duplikovat ďż˝ C centrovat ďż˝
-              M zrcadlit X ďż˝ ďż˝ipky = posun 5 mm ďż˝ R vrďż˝tit
+              Zkratky: O narovnej · S slicuj · E export · P poslat · D duplikovat · C centrovat ·
+              M zrcadlit X · šipky = posun 5 mm · R vrátit
             </p>
           </div>
         )}
@@ -1617,13 +1618,13 @@ const doSlice = useCallback(async () => {
           <div className="info-panel">
             <div className="info-title">Informace</div>
             <div className="info-row">
-              <span>Tiskďż˝rna</span>
+              <span>Tiskárna</span>
               <b>
                 {printer.brand} {printer.name}
               </b>
             </div>
             <div className="info-row">
-              <span>Pryskyďż˝ice</span>
+              <span>Pryskyřice</span>
               <b>
                 {resin.brand} {resin.name} ({film.name})
               </b>
@@ -1633,15 +1634,15 @@ const doSlice = useCallback(async () => {
               <b>{models.length}</b>
             </div>
             <div className="info-row">
-              <span>Vana (Xďż˝Yďż˝Z)</span>
+              <span>Vana (X×Y×Z)</span>
               <b>
-                {printer.printX.toFixed(0)} ďż˝ {printer.printY.toFixed(0)} ďż˝ {printer.printZ.toFixed(0)} mm
+                {printer.printX.toFixed(0)} × {printer.printY.toFixed(0)} × {printer.printZ.toFixed(0)} mm
               </b>
             </div>
             <div className="info-row">
               <span>Vejde se do vany</span>
               <b className={allFit ? "" : "fit-bad"}>
-                {allFit ? "? ano" : "? nďż˝co pďż˝esahuje (ďż˝ervenďż˝)"}
+                {allFit ? "✓ ano" : "✗ něco přesahuje (červeně)"}
               </b>
             </div>
             {sliceResult && (
@@ -1649,11 +1650,11 @@ const doSlice = useCallback(async () => {
                 <div className="info-row">
                   <span>Vrstvy</span>
                   <b>
-                    {sliceResult.layers.length} ďż˝ {sliceResult.layerHeight} mm
+                    {sliceResult.layers.length} · {sliceResult.layerHeight} mm
                   </b>
                 </div>
                 <div className="info-row">
-                  <span>ďż˝as (odhad)</span>
+                  <span>Čas (odhad)</span>
                   <b>{fmtTime(estPrintTime)}</b>
                 </div>
               </>
@@ -1669,13 +1670,13 @@ const doSlice = useCallback(async () => {
             {selected && selStats && (
               <>
                 <div className="info-row">
-                  <span>Vybranďż˝</span>
+                  <span>Vybraný</span>
                   <b>{selected.name}</b>
                 </div>
                 <div className="info-row">
-                  <span>Rozmďż˝ry</span>
+                  <span>Rozměry</span>
                   <b>
-                    {selStats.width.toFixed(1)} ďż˝ {selStats.depth.toFixed(1)} ďż˝ {selStats.height.toFixed(1)} mm
+                    {selStats.width.toFixed(1)} × {selStats.depth.toFixed(1)} × {selStats.height.toFixed(1)} mm
                   </b>
                 </div>
                 <div className="info-row">
@@ -1686,23 +1687,23 @@ const doSlice = useCallback(async () => {
                 </div>
               </>
             )}
-            <p className="info-note">Pďż˝esun: vyber model a tďż˝hni 3D ďż˝ipkami</p>
+            <p className="info-note">Přesun: vyber model a táhni 3D šipkami</p>
           </div>
         )}
 
         {sliceResult && (
           <div className="layer-bar">
             <div className="layer-bar-head">
-              <span>Nďż˝hled tisku</span>
+              <span>Náhled tisku</span>
               <button
                 className="slice-close"
                 onClick={() => {
                   setSliceResult(null);
                   setLastExport(null);
                 }}
-                title="Zavďż˝ďż˝t nďż˝hled"
+                title="Zavřít náhled"
               >
-                ďż˝
+                ×
               </button>
             </div>
             <input
@@ -1713,13 +1714,13 @@ const doSlice = useCallback(async () => {
               onChange={(e) => setSliceIdx(Number(e.target.value))}
             />
             <div className="layer-bar-label">
-              Vrstva {sliceIdx + 1} / {sliceResult.layers.length} ďż˝ z ={" "}
-              {sliceResult.layers[sliceIdx].z.toFixed(2)} mm ďż˝ {sliceResult.layerHeight} mm/vrstva
+              Vrstva {sliceIdx + 1} / {sliceResult.layers.length} · z ={" "}
+              {sliceResult.layers[sliceIdx].z.toFixed(2)} mm · {sliceResult.layerHeight} mm/vrstva
             </div>
           </div>
         )}
 
-        {loading && <div className="toast toast-info">Naďż˝ďż˝tďż˝m modelďż˝</div>}
+        {loading && <div className="toast toast-info">Načítám model…</div>}
         {toast && (
           <div className={`toast ${toast.type === "ok" ? "toast-ok" : "toast-err"}`}>{toast.text}</div>
         )}
