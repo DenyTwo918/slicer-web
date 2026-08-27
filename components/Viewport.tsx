@@ -199,13 +199,15 @@ function raftShapes(
   mask: Uint8Array,
   width: number,
   height: number,
-  printer: PrinterProfile
+  printer: PrinterProfile,
+  preserveHoles = false,
+  threshold = 0
 ): THREE.Shape[] {
   const outgoing = new Map<string, Point2[]>();
   const edges: { a: Point2; b: Point2 }[] = [];
   const key = (p: Point2) => `${p.x},${p.y}`;
   const on = (x: number, y: number) =>
-    x >= 0 && y >= 0 && x < width && y < height && mask[y * width + x] !== 0;
+    x >= 0 && y >= 0 && x < width && y < height && mask[y * width + x] > threshold;
   const add = (a: Point2, b: Point2) => {
     edges.push({ a, b });
     const list = outgoing.get(key(a));
@@ -246,32 +248,84 @@ function raftShapes(
   const sx = printer.printX / width;
   const sy = printer.printY / height;
   const tolerancePx = Math.max(1, 0.65 / Math.min(sx, sy));
-  const shapes: THREE.Shape[] = [];
+  const pointInLoop = (loop: Point2[], point: Point2) => {
+    let inside = false;
+    for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+      const a = loop[i], b = loop[j];
+      if (((a.y > point.y) !== (b.y > point.y)) &&
+          point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  };
+  const entries: { loop: Point2[]; area: number; shape?: THREE.Shape }[] = [];
   for (const loop of loops) {
-    // Drobná vnitřní oka nejsou samostatné rafty. Raft je plná základna.
     let area = 0;
     for (let i = 0; i < loop.length; i++) {
       const a = loop[i];
       const b = loop[(i + 1) % loop.length];
       area += a.x * b.y - b.x * a.y;
     }
-    // Vnější obrysy mají při výše použité orientaci kladnou plochu; záporné
-    // smyčky jsou vnitřní díry. Raft má být plný, proto je nepřidáváme jako
-    // další překrývající se mesh (ten by blikáním vypadal rozbitě).
-    if (area < 4) continue;
+    if (Math.abs(area) < 4) continue;
     const smooth = smoothClosed(simplifyClosed(loop, tolerancePx));
     if (smooth.length < 3) continue;
-    const shape = new THREE.Shape();
-    smooth.forEach((p, i) => {
+    entries.push({ loop: smooth, area });
+  }
+
+  const shapes: THREE.Shape[] = [];
+  const writePath = (path: THREE.Path, loop: Point2[]) => {
+    loop.forEach((p, i) => {
       const wx = p.x * sx - printer.printX / 2;
       const wy = printer.printY / 2 - p.y * sy;
-      if (i === 0) shape.moveTo(wx, wy);
-      else shape.lineTo(wx, wy);
+      if (i === 0) path.moveTo(wx, wy);
+      else path.lineTo(wx, wy);
     });
-    shape.closePath();
+    path.closePath();
+  };
+  for (const entry of entries.filter((x) => x.area > 0)) {
+    const shape = new THREE.Shape();
+    writePath(shape, entry.loop);
+    entry.shape = shape;
     shapes.push(shape);
   }
+  if (preserveHoles) {
+    for (const hole of entries.filter((x) => x.area < 0)) {
+      const parent = entries
+        .filter((x) => x.area > 0 && x.shape && pointInLoop(x.loop, hole.loop[0]))
+        .sort((a, b) => Math.abs(a.area) - Math.abs(b.area))[0];
+      if (!parent?.shape) continue;
+      const path = new THREE.Path();
+      writePath(path, hole.loop);
+      parent.shape.holes.push(path);
+    }
+  }
   return shapes;
+}
+
+/** Skutečná aktuální tisková vrstva — vektorově, bez voxelové textury. */
+function SliceLayerSurface({ layer, printer }: { layer: LayerPreviewData; printer: PrinterProfile }) {
+  const geometry = useMemo(() => {
+    const shapes = raftShapes(layer.data, layer.resX, layer.resY, printer, true, 24);
+    if (shapes.length === 0) return null;
+    const g = new THREE.ShapeGeometry(shapes);
+    g.translate(0, 0, layer.z + 0.006);
+    return g;
+  }, [layer, printer]);
+  useEffect(() => () => geometry?.dispose(), [geometry]);
+  if (!geometry) return null;
+  return (
+    <mesh geometry={geometry} renderOrder={3}>
+      <meshStandardMaterial
+        color="#60a5fa"
+        emissive="#1d4ed8"
+        emissiveIntensity={0.18}
+        roughness={0.42}
+        metalness={0.03}
+        side={THREE.DoubleSide}
+        polygonOffset
+        polygonOffsetFactor={-2}
+      />
+    </mesh>
+  );
 }
 
 /** Raft jako skutečný vektorový extrudovaný mesh, nikoli pixelová textura. */
@@ -429,117 +483,6 @@ function SupportMesh({
   );
 }
 
-/** Přesná vektorová výplň řezu STL, aby oříznutý solid nevypadal dutě. */
-function buildCapGeometry(mesh: StlMesh, localZ: number): THREE.ShapeGeometry | null {
-  const p = mesh.positions;
-  const sourceZ = localZ + mesh.bounds.min[2];
-  const centerX = (mesh.bounds.min[0] + mesh.bounds.max[0]) / 2;
-  const centerY = (mesh.bounds.min[1] + mesh.bounds.max[1]) / 2;
-  const eps = 1e-4;
-  const nodes = new Map<string, { p: Point2; neighbors: Set<string> }>();
-  const edges = new Set<string>();
-  const key = (x: number, y: number) => `${Math.round(x / eps)},${Math.round(y / eps)}`;
-  const edgeKey = (a: string, b: string) => a < b ? `${a}|${b}` : `${b}|${a}`;
-  const addNode = (x: number, y: number) => {
-    const k = key(x, y);
-    if (!nodes.has(k)) nodes.set(k, { p: { x: x - centerX, y: y - centerY }, neighbors: new Set() });
-    return k;
-  };
-
-  for (let t = 0; t < mesh.triangleCount; t++) {
-    const o = t * 9;
-    const pts: Point2[] = [];
-    for (let e = 0; e < 3; e++) {
-      const a = o + e * 3;
-      const b = o + ((e + 1) % 3) * 3;
-      const da = p[a + 2] - sourceZ;
-      const db = p[b + 2] - sourceZ;
-      if ((da < 0 && db >= 0) || (db < 0 && da >= 0)) {
-        const f = da / (da - db);
-        pts.push({
-          x: p[a] + f * (p[b] - p[a]),
-          y: p[a + 1] + f * (p[b + 1] - p[a + 1]),
-        });
-      }
-    }
-    if (pts.length !== 2) continue;
-    const a = addNode(pts[0].x, pts[0].y);
-    const b = addNode(pts[1].x, pts[1].y);
-    if (a === b) continue;
-    nodes.get(a)!.neighbors.add(b);
-    nodes.get(b)!.neighbors.add(a);
-    edges.add(edgeKey(a, b));
-  }
-  if (edges.size === 0) return null;
-
-  const unused = new Set(edges);
-  const loops: Point2[][] = [];
-  while (unused.size > 0) {
-    const firstEdge = unused.values().next().value as string;
-    const [start, second] = firstEdge.split("|");
-    const loopKeys = [start];
-    let previous = start;
-    let current = second;
-    unused.delete(firstEdge);
-    let guard = 0;
-    while (current !== start && guard++ <= edges.size) {
-      loopKeys.push(current);
-      const next = [...(nodes.get(current)?.neighbors ?? [])].find(
-        (candidate) => candidate !== previous && unused.has(edgeKey(current, candidate))
-      );
-      if (!next) break;
-      unused.delete(edgeKey(current, next));
-      previous = current;
-      current = next;
-    }
-    if (current === start && loopKeys.length >= 3) {
-      loops.push(loopKeys.map((k) => nodes.get(k)!.p));
-    }
-  }
-  if (loops.length === 0) return null;
-
-  const area = (loop: Point2[]) => loop.reduce((sum, a, i) => {
-    const b = loop[(i + 1) % loop.length];
-    return sum + a.x * b.y - b.x * a.y;
-  }, 0) / 2;
-  const contains = (loop: Point2[], point: Point2) => {
-    let inside = false;
-    for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
-      const a = loop[i], b = loop[j];
-      if (((a.y > point.y) !== (b.y > point.y)) &&
-          point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
-    }
-    return inside;
-  };
-
-  const ordered = loops
-    .map((loop) => ({ loop, absArea: Math.abs(area(loop)) }))
-    .filter((x) => x.absArea > 1e-6)
-    .sort((a, b) => b.absArea - a.absArea);
-  const outers: { loop: Point2[]; absArea: number; shape: THREE.Shape }[] = [];
-  for (let i = 0; i < ordered.length; i++) {
-    const item = ordered[i];
-    const depth = ordered.slice(0, i).filter((parent) => contains(parent.loop, item.loop[0])).length;
-    const vec = item.loop.map((q) => new THREE.Vector2(q.x, q.y));
-    if (depth % 2 === 0) {
-      if (!THREE.ShapeUtils.isClockWise(vec)) vec.reverse();
-      const shape = new THREE.Shape(vec);
-      outers.push({ ...item, shape });
-    } else {
-      const parent = [...outers]
-        .filter((outer) => contains(outer.loop, item.loop[0]))
-        .sort((a, b) => a.absArea - b.absArea)[0];
-      if (!parent) continue;
-      if (THREE.ShapeUtils.isClockWise(vec)) vec.reverse();
-      parent.shape.holes.push(new THREE.Path(vec));
-    }
-  }
-  if (outers.length === 0) return null;
-  const geometry = new THREE.ShapeGeometry(outers.map((x) => x.shape));
-  geometry.translate(0, 0, localZ + 0.002);
-  return geometry;
-}
-
 function Model({
   mesh,
   color,
@@ -568,12 +511,7 @@ function Model({
     () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, -1), layerZ) : null),
     [clipPlane, layerZ]
   );
-  const capGeometry = useMemo(
-    () => (clipPlane ? buildCapGeometry(mesh, layerZ) : null),
-    [mesh, clipPlane, layerZ]
-  );
   useEffect(() => () => geometry.dispose(), [geometry]);
-  useEffect(() => () => capGeometry?.dispose(), [capGeometry]);
 
   if (!clipPlane) {
     return (
@@ -591,30 +529,16 @@ function Model({
 
   // Řez: vykreslí se pouze skutečně vytištěná spodní část modelu.
   return (
-    <>
-      <mesh geometry={geometry} castShadow receiveShadow>
-        <meshStandardMaterial
-          color={color}
-          metalness={0.2}
-          roughness={0.32}
-          envMapIntensity={0.9}
-          side={THREE.DoubleSide}
-          clippingPlanes={[below!]}
-        />
-      </mesh>
-      {capGeometry && (
-        <mesh geometry={capGeometry} castShadow receiveShadow renderOrder={2}>
-          <meshStandardMaterial
-            color={color}
-            metalness={0.08}
-            roughness={0.4}
-            side={THREE.DoubleSide}
-            polygonOffset
-            polygonOffsetFactor={-1}
-          />
-        </mesh>
-      )}
-    </>
+    <mesh geometry={geometry} castShadow receiveShadow>
+      <meshStandardMaterial
+        color="#3b82f6"
+        metalness={0.08}
+        roughness={0.4}
+        envMapIntensity={0.75}
+        side={THREE.DoubleSide}
+        clippingPlanes={[below!]}
+      />
+    </mesh>
   );
 }
 
@@ -753,6 +677,10 @@ export default function Viewport({
       <Vat printer={printer} />
       {/* Žádná rasterová vrstva přes model: při řezu zůstává vidět původní STL
           mesh 1:1. Starý downsampled zelený rastr byl zdrojem voxelového vzhledu. */}
+
+      {/* Modrý povrch je skutečná aktuální tisková vrstva; slider tak skládá
+          model vrstvu po vrstvě místo falešné bílé výplně řezu. */}
+      {layerPreview && <SliceLayerSurface layer={layerPreview} printer={printer} />}
 
       {/* SLA podpory jako hladké geometrické prvky; nikdy se nerekonstruují z pixelů. */}
       {supportPreview && layerPreview && (
