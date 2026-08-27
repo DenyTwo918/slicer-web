@@ -201,7 +201,8 @@ function raftShapes(
   height: number,
   printer: PrinterProfile,
   preserveHoles = false,
-  threshold = 0
+  threshold = 0,
+  smooth = true
 ): THREE.Shape[] {
   const outgoing = new Map<string, Point2[]>();
   const edges: { a: Point2; b: Point2 }[] = [];
@@ -247,7 +248,7 @@ function raftShapes(
 
   const sx = printer.printX / width;
   const sy = printer.printY / height;
-  const tolerancePx = Math.max(1, 0.65 / Math.min(sx, sy));
+  const tolerancePx = smooth ? Math.max(1, 0.65 / Math.min(sx, sy)) : 0;
   const pointInLoop = (loop: Point2[], point: Point2) => {
     let inside = false;
     for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
@@ -266,9 +267,14 @@ function raftShapes(
       area += a.x * b.y - b.x * a.y;
     }
     if (Math.abs(area) < 4) continue;
-    const smooth = smoothClosed(simplifyClosed(loop, tolerancePx));
-    if (smooth.length < 3) continue;
-    entries.push({ loop: smooth, area });
+    // Tisková vrstva musí být 1:1 s bitmapou. Chaikin + RDP jsou vhodné pro
+    // vizuální raft, ale u duté skořepiny posouvaly stěny, zavíraly malé otvory
+    // a vytvářely zdánlivé vady, které ve skutečné vrstvě nebyly.
+    const displayLoop = smooth
+      ? smoothClosed(simplifyClosed(loop, tolerancePx))
+      : loop;
+    if (displayLoop.length < 3) continue;
+    entries.push({ loop: displayLoop, area });
   }
 
   const shapes: THREE.Shape[] = [];
@@ -304,7 +310,7 @@ function raftShapes(
 /** Skutečná aktuální tisková vrstva — vektorově, bez voxelové textury. */
 function SliceLayerSurface({ layer, printer }: { layer: LayerPreviewData; printer: PrinterProfile }) {
   const geometry = useMemo(() => {
-    const shapes = raftShapes(layer.data, layer.resX, layer.resY, printer, true, 24);
+    const shapes = raftShapes(layer.data, layer.resX, layer.resY, printer, true, 24, false);
     if (shapes.length === 0) return null;
     const g = new THREE.ShapeGeometry(shapes);
     g.translate(0, 0, layer.z + 0.006);
@@ -315,9 +321,9 @@ function SliceLayerSurface({ layer, printer }: { layer: LayerPreviewData; printe
   return (
     <mesh geometry={geometry} renderOrder={3}>
       <meshStandardMaterial
-        color="#60a5fa"
-        emissive="#1d4ed8"
-        emissiveIntensity={0.18}
+        color="#2563eb"
+        emissive="#172554"
+        emissiveIntensity={0.06}
         roughness={0.42}
         metalness={0.03}
         side={THREE.DoubleSide}

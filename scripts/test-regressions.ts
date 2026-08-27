@@ -54,6 +54,23 @@ const hollow = applyHollow(solid, { enabled: true, wallMm: 0.2, holeDiaMm: 1, dr
 assert.equal(hollow.layers[5].data[12], 0, "střed dutiny");
 assert.equal(hollow.layers[9].data[12], 1, "horní Z stěna");
 
+// Vnitřek se smí odebrat jen pokud je plné celé Z okolí, ne pouze dvě krajní
+// vrstvy. Tohle dříve dělalo díry ve skořepině na šikmých/rychle se měnících řezech.
+const changingLayers = Array.from({ length: 7 }, (_, index) => {
+  const data = new Uint8Array(81).fill(1);
+  if (index === 4) data[40] = 0;
+  return { index, z: (index + 0.5) * 0.1, data };
+});
+const changing: SliceResult = {
+  layers: changingLayers, layerHeight: 0.1, resolutionX: 9, resolutionY: 9, minX: 0, minY: 0,
+};
+const changingHollow = applyHollow(
+  changing,
+  { enabled: true, wallMm: 0.2, holeDiaMm: 1, drainHoles: false },
+  { x: 0.1, y: 0.1 }
+);
+assert.equal(changingHollow.layers[3].data[40], 1, "skořepina musí respektovat každou sousední Z vrstvu");
+
 // Hollow dutina není legální trasa podpory: kolize se počítá proti plnému obalu.
 const W = 21, H = 21;
 const solidLayers = Array.from({ length: 10 }, (_, index) => {

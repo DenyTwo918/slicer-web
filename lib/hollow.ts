@@ -1,5 +1,4 @@
 import type { SliceResult } from "./slice";
-import { nativeReady, wasmHollowShell } from "./native";
 
 export interface HollowOptions {
   enabled: boolean;
@@ -33,8 +32,10 @@ function carveCircle(layer: Uint8Array, cx: number, cy: number, r: number, W: nu
 
 /**
  * Hollowing (dutý model): odstraní vnitřek stěn o tloušťce wallMm.
- * Implementace: rychlá aproximace eroze — pixel zůstává, jen pokud jsou
- * pixely ve vzdálenosti wallPx (4 směry) vyplněné. Odvodňovací otvory
+ * Implementace: skutečná 3D box eroze solidního objemu. Pixel je vnitřek jen
+ * když je celé XY okolí i všechny vrstvy v tloušťce stěny vyplněné. Tím se
+ * stěna nerozpadá na šikmých plochách (původní kontrola pouhých 4 bodů v XY
+ * a dvou vrstev v Z vytvářela díry a proměnlivou tloušťku). Odvodňovací otvory
  * se vyříznou na spodní a horní vrstvě na pravém okraji modelu.
  */
 export function applyHollow(
@@ -51,74 +52,75 @@ export function applyHollow(
   const holeR = Math.max(1, Math.round((opts.holeDiaMm / 2) / px));
 
   const N = slice.layers.length;
-  const out = slice.layers.map((l) => new Uint8Array(l.data));
-
-  // spodní vrstvy zůstanou plné (pevná základna — správně i pro tisk)
-  const solidBaseLayers = Math.max(1, Math.floor(N * 0.02));
+  const out: Uint8Array[] = Array.from({ length: N });
   const holeBottom = opts.drainHoles ? Math.max(0, Math.floor(N * 0.05)) : -1;
   const holeTop = opts.drainHoles ? Math.max(0, Math.floor(N * 0.85)) : -1;
 
+  // XY eroze jedné vrstvy přes integrální obraz: kontroluje celé okolí,
+  // nikoli jen čtyři vzdálené vzorky. Každá vrstva se spočítá právě jednou.
+  const integralStride = W + 1;
+  const integral = new Uint32Array((W + 1) * (H + 1));
+  const erodeXY = (src: Uint8Array) => {
+    const dst = new Uint8Array(W * H);
+    if (!hasPixels(src) || W <= wallPx * 2 || H <= wallPx * 2) return dst;
+    for (let y = 0; y < H; y++) {
+      let rowSum = 0;
+      const srcRow = y * W;
+      const dstRow = (y + 1) * integralStride;
+      const prevRow = y * integralStride;
+      for (let x = 0; x < W; x++) {
+        rowSum += src[srcRow + x] ? 1 : 0;
+        integral[dstRow + x + 1] = integral[prevRow + x + 1] + rowSum;
+      }
+    }
+    const side = wallPx * 2 + 1;
+    const area = side * side;
+    for (let y = wallPx; y < H - wallPx; y++) {
+      const y0 = y - wallPx;
+      const y1 = y + wallPx + 1;
+      const row = y * W;
+      for (let x = wallPx; x < W - wallPx; x++) {
+        if (!src[row + x]) continue;
+        const x0 = x - wallPx;
+        const x1 = x + wallPx + 1;
+        const sum = integral[y1 * integralStride + x1] - integral[y0 * integralStride + x1]
+          - integral[y1 * integralStride + x0] + integral[y0 * integralStride + x0];
+        if (sum === area) dst[row + x] = 1;
+      }
+    }
+    return dst;
+  };
+
+  // Posuvné Z okno drží jen 2*wallLayers+1 erodovaných vrstev. Je to přesná
+  // separabilní 3D box eroze bez násobného skenování všech sousedních vrstev.
+  const zCount = new Uint16Array(W * H);
+  const cache = new Map<number, Uint8Array>();
+  const addLayer = (index: number, delta: 1 | -1) => {
+    if (index < 0 || index >= N) return;
+    let eroded = cache.get(index);
+    if (!eroded) {
+      eroded = erodeXY(slice.layers[index].data);
+      cache.set(index, eroded);
+    }
+    for (let p = 0; p < eroded.length; p++) if (eroded[p]) zCount[p] += delta;
+  };
+  for (let j = 0; j <= wallLayers && j < N; j++) addLayer(j, 1);
+  const fullWindow = wallLayers * 2 + 1;
+
   for (let i = 0; i < N; i++) {
-    const originalLayer = slice.layers[i].data;
-    let layer = out[i];
-    // vrstva plná? (skip prázdné)
-    if (!hasPixels(layer)) continue;
-
-    // pevná základna — nehollowovat
-    if (i < solidBaseLayers) {
-      // odvodňovací otvory i tak vyříznout
-      if (i === holeBottom || i === holeTop) {
-        carveEdgeHole(layer, holeR, W, H);
-      }
-      continue;
+    const original = slice.layers[i].data;
+    const layer = new Uint8Array(W * H);
+    const completeZWindow = i >= wallLayers && i + wallLayers < N;
+    for (let p = 0; p < layer.length; p++) {
+      if (original[p] && (!completeZWindow || zCount[p] !== fullWindow)) layer[p] = 1;
     }
+    if (i === holeBottom || i === holeTop) carveEdgeHole(layer, holeR, W, H);
+    out[i] = layer;
 
-    // rychlá eroze: pixel zůstane, pokud okolí ve vzdálenosti wallPx je plné
-    if (nativeReady() && wallPx >= 1) {
-      layer = wasmHollowShell(layer, W, H, wallPx);
-      out[i] = layer;
-    } else {
-      const keep = new Uint8Array(W * H);
-      const isFilled = (x: number, y: number) => layer[y * W + x] !== 0;
-      for (let y = wallPx; y < H - wallPx; y++) {
-        const row = y * W;
-        for (let x = wallPx; x < W - wallPx; x++) {
-          const p = row + x;
-          if (!layer[p]) continue;
-          if (
-            isFilled(x + wallPx, y) &&
-            isFilled(x - wallPx, y) &&
-            isFilled(x, y + wallPx) &&
-            isFilled(x, y - wallPx)
-          ) {
-            keep[p] = 1;
-          }
-        }
-      }
-      // hollow: filled a NE vnitřek
-      for (let p = 0; p < W * H; p++) {
-        if (keep[p]) layer[p] = 0;
-      }
-    }
-
-    // 2D eroze sama o sobě odstraní střechu a dno dutiny. Vnitřek smíme
-    // vymazat jen tehdy, když je pixel hluboko uvnitř také v ose Z.
-    const below = i - wallLayers;
-    const above = i + wallLayers;
-    for (let p = 0; p < W * H; p++) {
-      if (!originalLayer[p] || layer[p]) continue;
-      const zInterior =
-        below >= 0 &&
-        above < N &&
-        slice.layers[below].data[p] !== 0 &&
-        slice.layers[above].data[p] !== 0;
-      if (!zInterior) layer[p] = originalLayer[p];
-    }
-
-    // odvodňovací otvory: vyříznout na okraji (pravý okraj vrstvy)
-    if (i === holeBottom || i === holeTop) {
-      carveEdgeHole(layer, holeR, W, H);
-    }
+    const leaving = i - wallLayers;
+    addLayer(leaving, -1);
+    cache.delete(leaving);
+    addLayer(i + wallLayers + 1, 1);
   }
 
   return {
