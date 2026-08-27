@@ -451,22 +451,12 @@ function Model({
   }, [mesh]);
 
   // POZOR: THREE drží poloprostor normal·p + constant >= 0.
-  // solid = POD řezem (z <= layerZ), ghost = NAD řezem (z >= layerZ)
+  // Náhled vrstvy musí skutečně skrýt vše NAD řezem (z <= layerZ).
   const layerZ = clipPlane ? -clipPlane.constant : 0;
   const below = useMemo(
     () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, -1), layerZ) : null),
     [clipPlane, layerZ]
   );
-  const above = useMemo(
-    () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, 1), -layerZ) : null),
-    [clipPlane, layerZ]
-  );
-  // horní část řezu = solid ghost (tmavší odstín) — hook MUSÍ být před podmíněným returnem
-  const ghostColor = useMemo(() => {
-    const c = new THREE.Color(color);
-    c.multiplyScalar(0.62);
-    return "#" + c.getHexString();
-  }, [color]);
 
   if (!clipPlane) {
     return (
@@ -482,31 +472,18 @@ function Model({
     );
   }
 
-  // řez: spodní část plná, horní část = solid ghost (tmavší odstín, neprůhledný)
-  // → model vypadá jako plné těleso, podpory neprosvítají stěnami
+  // Řez: vykreslí se pouze skutečně vytištěná spodní část modelu.
   return (
-    <>
-      <mesh geometry={geometry} castShadow receiveShadow>
-        <meshStandardMaterial
-          color={color}
-          metalness={0.2}
-          roughness={0.32}
-          envMapIntensity={0.9}
-          side={THREE.DoubleSide}
-          clippingPlanes={[below!]}
-        />
-      </mesh>
-      <mesh geometry={geometry} castShadow receiveShadow>
-        <meshStandardMaterial
-          color={ghostColor}
-          metalness={0.2}
-          roughness={0.32}
-          envMapIntensity={0.9}
-          side={THREE.DoubleSide}
-          clippingPlanes={[above!]}
-        />
-      </mesh>
-    </>
+    <mesh geometry={geometry} castShadow receiveShadow>
+      <meshStandardMaterial
+        color={color}
+        metalness={0.2}
+        roughness={0.32}
+        envMapIntensity={0.9}
+        side={THREE.DoubleSide}
+        clippingPlanes={[below!]}
+      />
+    </mesh>
   );
 }
 
@@ -582,7 +559,7 @@ export default function Viewport({
   const [orbitEnabled, setOrbitEnabled] = useState(true);
   const rad2deg = (r: number) => (r * 180) / Math.PI;
 
-  // model se krájí na aktuální vrstvě (spodní část plná, horní ghost)
+  // model se skutečně ořízne na aktuální vrstvě; horní část se nevykresluje
   const clipPlane = useMemo(
     () =>
       layerPreview
