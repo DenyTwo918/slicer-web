@@ -429,6 +429,117 @@ function SupportMesh({
   );
 }
 
+/** Přesná vektorová výplň řezu STL, aby oříznutý solid nevypadal dutě. */
+function buildCapGeometry(mesh: StlMesh, localZ: number): THREE.ShapeGeometry | null {
+  const p = mesh.positions;
+  const sourceZ = localZ + mesh.bounds.min[2];
+  const centerX = (mesh.bounds.min[0] + mesh.bounds.max[0]) / 2;
+  const centerY = (mesh.bounds.min[1] + mesh.bounds.max[1]) / 2;
+  const eps = 1e-4;
+  const nodes = new Map<string, { p: Point2; neighbors: Set<string> }>();
+  const edges = new Set<string>();
+  const key = (x: number, y: number) => `${Math.round(x / eps)},${Math.round(y / eps)}`;
+  const edgeKey = (a: string, b: string) => a < b ? `${a}|${b}` : `${b}|${a}`;
+  const addNode = (x: number, y: number) => {
+    const k = key(x, y);
+    if (!nodes.has(k)) nodes.set(k, { p: { x: x - centerX, y: y - centerY }, neighbors: new Set() });
+    return k;
+  };
+
+  for (let t = 0; t < mesh.triangleCount; t++) {
+    const o = t * 9;
+    const pts: Point2[] = [];
+    for (let e = 0; e < 3; e++) {
+      const a = o + e * 3;
+      const b = o + ((e + 1) % 3) * 3;
+      const da = p[a + 2] - sourceZ;
+      const db = p[b + 2] - sourceZ;
+      if ((da < 0 && db >= 0) || (db < 0 && da >= 0)) {
+        const f = da / (da - db);
+        pts.push({
+          x: p[a] + f * (p[b] - p[a]),
+          y: p[a + 1] + f * (p[b + 1] - p[a + 1]),
+        });
+      }
+    }
+    if (pts.length !== 2) continue;
+    const a = addNode(pts[0].x, pts[0].y);
+    const b = addNode(pts[1].x, pts[1].y);
+    if (a === b) continue;
+    nodes.get(a)!.neighbors.add(b);
+    nodes.get(b)!.neighbors.add(a);
+    edges.add(edgeKey(a, b));
+  }
+  if (edges.size === 0) return null;
+
+  const unused = new Set(edges);
+  const loops: Point2[][] = [];
+  while (unused.size > 0) {
+    const firstEdge = unused.values().next().value as string;
+    const [start, second] = firstEdge.split("|");
+    const loopKeys = [start];
+    let previous = start;
+    let current = second;
+    unused.delete(firstEdge);
+    let guard = 0;
+    while (current !== start && guard++ <= edges.size) {
+      loopKeys.push(current);
+      const next = [...(nodes.get(current)?.neighbors ?? [])].find(
+        (candidate) => candidate !== previous && unused.has(edgeKey(current, candidate))
+      );
+      if (!next) break;
+      unused.delete(edgeKey(current, next));
+      previous = current;
+      current = next;
+    }
+    if (current === start && loopKeys.length >= 3) {
+      loops.push(loopKeys.map((k) => nodes.get(k)!.p));
+    }
+  }
+  if (loops.length === 0) return null;
+
+  const area = (loop: Point2[]) => loop.reduce((sum, a, i) => {
+    const b = loop[(i + 1) % loop.length];
+    return sum + a.x * b.y - b.x * a.y;
+  }, 0) / 2;
+  const contains = (loop: Point2[], point: Point2) => {
+    let inside = false;
+    for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+      const a = loop[i], b = loop[j];
+      if (((a.y > point.y) !== (b.y > point.y)) &&
+          point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  };
+
+  const ordered = loops
+    .map((loop) => ({ loop, absArea: Math.abs(area(loop)) }))
+    .filter((x) => x.absArea > 1e-6)
+    .sort((a, b) => b.absArea - a.absArea);
+  const outers: { loop: Point2[]; absArea: number; shape: THREE.Shape }[] = [];
+  for (let i = 0; i < ordered.length; i++) {
+    const item = ordered[i];
+    const depth = ordered.slice(0, i).filter((parent) => contains(parent.loop, item.loop[0])).length;
+    const vec = item.loop.map((q) => new THREE.Vector2(q.x, q.y));
+    if (depth % 2 === 0) {
+      if (!THREE.ShapeUtils.isClockWise(vec)) vec.reverse();
+      const shape = new THREE.Shape(vec);
+      outers.push({ ...item, shape });
+    } else {
+      const parent = [...outers]
+        .filter((outer) => contains(outer.loop, item.loop[0]))
+        .sort((a, b) => a.absArea - b.absArea)[0];
+      if (!parent) continue;
+      if (THREE.ShapeUtils.isClockWise(vec)) vec.reverse();
+      parent.shape.holes.push(new THREE.Path(vec));
+    }
+  }
+  if (outers.length === 0) return null;
+  const geometry = new THREE.ShapeGeometry(outers.map((x) => x.shape));
+  geometry.translate(0, 0, localZ + 0.002);
+  return geometry;
+}
+
 function Model({
   mesh,
   color,
@@ -457,6 +568,12 @@ function Model({
     () => (clipPlane ? new THREE.Plane(new THREE.Vector3(0, 0, -1), layerZ) : null),
     [clipPlane, layerZ]
   );
+  const capGeometry = useMemo(
+    () => (clipPlane ? buildCapGeometry(mesh, layerZ) : null),
+    [mesh, clipPlane, layerZ]
+  );
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  useEffect(() => () => capGeometry?.dispose(), [capGeometry]);
 
   if (!clipPlane) {
     return (
@@ -474,16 +591,30 @@ function Model({
 
   // Řez: vykreslí se pouze skutečně vytištěná spodní část modelu.
   return (
-    <mesh geometry={geometry} castShadow receiveShadow>
-      <meshStandardMaterial
-        color={color}
-        metalness={0.2}
-        roughness={0.32}
-        envMapIntensity={0.9}
-        side={THREE.DoubleSide}
-        clippingPlanes={[below!]}
-      />
-    </mesh>
+    <>
+      <mesh geometry={geometry} castShadow receiveShadow>
+        <meshStandardMaterial
+          color={color}
+          metalness={0.2}
+          roughness={0.32}
+          envMapIntensity={0.9}
+          side={THREE.DoubleSide}
+          clippingPlanes={[below!]}
+        />
+      </mesh>
+      {capGeometry && (
+        <mesh geometry={capGeometry} castShadow receiveShadow renderOrder={2}>
+          <meshStandardMaterial
+            color={color}
+            metalness={0.08}
+            roughness={0.4}
+            side={THREE.DoubleSide}
+            polygonOffset
+            polygonOffsetFactor={-1}
+          />
+        </mesh>
+      )}
+    </>
   );
 }
 

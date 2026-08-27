@@ -6,6 +6,7 @@ import { meshStats } from "../lib/orient";
 import { buildLayersControllerFrom, encodeRlePw0 } from "../lib/pm7";
 import { sliceMesh, unionSlices, type SliceResult } from "../lib/slice";
 import type { StlMesh } from "../lib/stl";
+import { generateSupports } from "../lib/supports";
 import { mirrorMesh, totalVolume } from "../lib/transform";
 
 function tetra(reverse = false): StlMesh {
@@ -52,6 +53,34 @@ const solid: SliceResult = { layers, layerHeight: 0.1, resolutionX: 5, resolutio
 const hollow = applyHollow(solid, { enabled: true, wallMm: 0.2, holeDiaMm: 1, drainHoles: false }, { x: 0.1, y: 0.1 });
 assert.equal(hollow.layers[5].data[12], 0, "střed dutiny");
 assert.equal(hollow.layers[9].data[12], 1, "horní Z stěna");
+
+// Hollow dutina není legální trasa podpory: kolize se počítá proti plnému obalu.
+const W = 21, H = 21;
+const solidLayers = Array.from({ length: 10 }, (_, index) => {
+  const data = new Uint8Array(W * H);
+  for (let y = 5; y <= 15; y++) for (let x = 5; x <= 15; x++) data[y * W + x] = 1;
+  return { index, z: index + 0.5, data };
+});
+const shellLayers = solidLayers.map((layer, index) => {
+  const data = new Uint8Array(W * H);
+  for (let y = 5; y <= 15; y++) for (let x = 5; x <= 15; x++) {
+    if (index === 9 || x === 5 || x === 15 || y === 5 || y === 15) data[y * W + x] = 1;
+  }
+  return { ...layer, data };
+});
+const solidCollision: SliceResult = { layers: solidLayers, layerHeight: 1, resolutionX: W, resolutionY: H, minX: 0, minY: 0 };
+const hollowShell: SliceResult = { ...solidCollision, layers: shellLayers };
+const interiorAnchor = [{ x: 10, y: 10, layer: 9 }];
+assert.equal(
+  generateSupports(hollowShell, { enabled: true, radiusPx: 1, tipPx: 1, mmPerPx: 1 }, interiorAnchor).preview.pillars.length,
+  1,
+  "kontrolní případ: bez plného obalu by podpora vedla dutinou"
+);
+assert.equal(
+  generateSupports(hollowShell, { enabled: true, radiusPx: 1, tipPx: 1, mmPerPx: 1 }, interiorAnchor, solidCollision).preview.pillars.length,
+  0,
+  "podpora nesmí vést dutinou uvnitř modelu"
+);
 
 assert.equal(md5Hex(""), "D41D8CD98F00B204E9800998ECF8427E");
 assert.equal(md5Hex("abc"), "900150983CD24FB0D6963F7D28E17F72");

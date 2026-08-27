@@ -354,7 +354,9 @@ export function braceLineFree(
 export function generateSupports(
   slice: SliceResult,
   opts: SupportOptions,
-  anchors?: { x: number; y: number; layer: number }[]
+  anchors?: { x: number; y: number; layer: number }[],
+  /** Plný vnější objem pro kolize; u hollow modelu nesmí sloup vést dutinou. */
+  collisionSlice: SliceResult = slice
 ): SupportResult {
   if (!opts.enabled) {
     return {
@@ -385,7 +387,7 @@ export function generateSupports(
 
   const ctx: PillarCtx = {
     N: layers.length,
-    modelAt: (li, x, y) => slice.layers[li].data[y * W + x] !== 0,
+    modelAt: (li, x, y) => collisionSlice.layers[li].data[y * W + x] !== 0,
     fill: (li, cx, cy, r) =>
       fillCircleIfEmpty(
         layers[li],

@@ -91,6 +91,7 @@ export async function runSlicePipeline(
 
   // GPU slicing (WebGPU depth-based; hollow už aplikované) — jinak CPU fallback
   let result: SliceResult | null = null;
+  let collisionResult: SliceResult | null = null;
   let engine: "gpu" | "cpu" = "cpu";
   // Přesný vektorový CPU sweep je po Z-indexaci rychlý i na Benchy a na rozdíl
   // od depth mapy zachová více dutin/intervalů v jednom XY paprsku. GPU depth
@@ -108,6 +109,7 @@ export async function runSlicePipeline(
     : null;
   if (gpu) {
     result = gpu;
+    if (!settings.hollow) collisionResult = gpu;
     engine = "gpu";
   } else {
     const globalZStart = Math.min(...models.map((m) => m.bounds.min[2]));
@@ -132,6 +134,9 @@ export async function runSlicePipeline(
       });
       result = result ? unionSlices(result, s) : s;
     }
+    // Kolize podpor se vždy testují proti plnému vnějšímu objemu. Jinak by
+    // u hollow modelu sloupy legálně vedly prázdnou dutinou uvnitř skořepiny.
+    collisionResult = result;
     if (result && settings.hollow) {
       result = applyHollow(
         result,
@@ -170,7 +175,7 @@ export async function runSlicePipeline(
       tipPx: Math.max(1, Math.round(settings.supportTipMm / px)),
       mmPerPx: mmPerPx.x,
       collectMask: opts?.collectSupportMask === true,
-    }, anchors);
+    }, anchors, collisionResult ?? result);
     result = sr.result;
     if (opts?.collectSupportMask) supportMask = sr.mask;
     supportPreview = sr.preview;
