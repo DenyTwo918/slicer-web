@@ -10,7 +10,14 @@ import {
   wasmDilate,
 } from "./native";
 import { detectSupportAnchors } from "./supportDetect";
-import { placeSupports, crossBraceLines, type PillarCtx, type PlacedPillar, type BraceLine } from "./supports";
+import {
+  placeSupports,
+  crossBraceLines,
+  braceLineFree,
+  type PillarCtx,
+  type PlacedPillar,
+  type BraceLine,
+} from "./supports";
 import {
   encodeLayerToMachineInternal,
   encodeSceneSlice,
@@ -232,19 +239,10 @@ export async function buildPm7FullRes(
       Math.max(1, Math.round(2.5 / settings.layerHeight))
     );
     const maxXY = Math.max(8, Math.round(15 / pxPerMmSlice));
-    braceLines = crossBraceLines(placed, maxXY);
-  }
-
-  // raft footprint: model na vrstvě 0 (slice res) → dilatace o margin
-  let raftMask: Uint8Array | null = null;
-  if (settings.raft && settings.raftLayers > 0) {
-    const zq0 = layerZQ[0];
-    const footprint = new Uint8Array(sn);
-    for (let i = 0; i < sn; i++) {
-      if (sFront[i] < zq0 && zq0 < sBack[i]) footprint[i] = 1;
-    }
-    const marginPx = Math.max(1, Math.round(settings.raftMarginMm / pxPerMmSlice));
-    raftMask = wasmDilate(footprint, sliceW, sliceH, marginPx);
+    const braceRSlice = Math.max(1, Math.round(0.5 / pxPerMmSlice));
+    braceLines = crossBraceLines(placed, maxXY).filter((line) =>
+      braceLineFree(frCtx, line, braceRSlice, sliceW, sliceH)
+    );
   }
 
   const bottomExposure = opts.bottomExposure ?? 25;
@@ -273,14 +271,24 @@ export async function buildPm7FullRes(
   const radiusBotFull = Math.round(radiusTopFull * 1.4);
   const pillarsByLayer: Map<number, { x: number; y: number; r: number }[]> = new Map();
   for (const p of placed) {
+    // hlavní sloup od desky po začátek horního segmentu
     for (let li = 0; li <= p.top; li++) {
       const f = p.top > 0 ? 1 - li / p.top : 0;
-      const r =
-        li === p.top
-          ? tipFull
-          : Math.round(radiusTopFull + (radiusBotFull - radiusTopFull) * f);
+      const r = Math.round(radiusTopFull + (radiusBotFull - radiusTopFull) * f);
       const arr = pillarsByLayer.get(li) ?? [];
       arr.push({ x: p.x * scale, y: p.y * scale, r });
+      pillarsByLayer.set(li, arr);
+    }
+    // kuželový/šikmý top segment až ke skutečnému kontaktnímu bodu
+    const span = Math.max(1, p.anchorLayer - p.top);
+    for (let li = p.top + 1; li <= p.anchorLayer; li++) {
+      const f = Math.min(1, Math.max(0, (li - p.top) / span));
+      const arr = pillarsByLayer.get(li) ?? [];
+      arr.push({
+        x: Math.round((p.x + (p.anchorX - p.x) * f) * scale),
+        y: Math.round((p.y + (p.anchorY - p.y) * f) * scale),
+        r: Math.max(tipFull, Math.round(radiusTopFull + (tipFull - radiusTopFull) * f)),
+      });
       pillarsByLayer.set(li, arr);
     }
   }
@@ -305,26 +313,23 @@ export async function buildPm7FullRes(
     }
   }
 
-  // raft pixelové souřadnice (full-res) předpočítané jednou
-  let raftPixels: { x: number; y: number }[][] | null = null;
-  if (raftMask) {
-    raftPixels = [];
-    const marginLayers = Math.min(settings.raftLayers, numLayers);
-    for (let i = 0; i < marginLayers; i++) raftPixels.push([]);
-    for (let sy = 0; sy < sliceH; sy++) {
-      for (let sx2 = 0; sx2 < sliceW; sx2++) {
-        if (!raftMask[sy * sliceW + sx2]) continue;
-        const fx = sx2 * scale;
-        const fy = sy * scale;
-        for (let i = 0; i < marginLayers; i++) {
-          const arr = raftPixels[i];
-          for (let dy = 0; dy < scale; dy++) {
-            for (let dx = 0; dx < scale; dx++) {
-              arr.push({ x: fx + dx, y: fy + dy });
-            }
-          }
-        }
-      }
+  // Raft přímo v nativním rozlišení. Dřívější upscaling 1/16 masky dělal
+  // viditelné 16×16 voxelové schody i v exportu.
+  let raftIndices: Uint32Array | null = null;
+  if (settings.raft && settings.raftLayers > 0) {
+    const footprintFull = new Uint8Array(resX * resY);
+    const zq0 = layerZQ[0];
+    for (let idx = 0; idx < footprintFull.length; idx++) {
+      if (depth.front[idx] < zq0 && zq0 < depth.back[idx]) footprintFull[idx] = 1;
+    }
+    const marginFull = Math.max(1, Math.round(settings.raftMarginMm / pxPerMmFull));
+    const smoothRaft = wasmDilate(footprintFull, resX, resY, marginFull);
+    let countRaft = 0;
+    for (let idx = 0; idx < smoothRaft.length; idx++) countRaft += smoothRaft[idx] ? 1 : 0;
+    raftIndices = new Uint32Array(countRaft);
+    let ri = 0;
+    for (let idx = 0; idx < smoothRaft.length; idx++) {
+      if (smoothRaft[idx]) raftIndices[ri++] = idx;
     }
   }
 
@@ -409,10 +414,9 @@ export async function buildPm7FullRes(
     }
 
     // raft (prvních N vrstev)
-    if (raftPixels && i < raftPixels.length) {
-      const rp = raftPixels[i];
-      for (let k = 0; k < rp.length; k++) {
-        const idx = rp[k].y * resX + rp[k].x;
+    if (raftIndices && i < Math.min(settings.raftLayers, numLayers)) {
+      for (let k = 0; k < raftIndices.length; k++) {
+        const idx = raftIndices[k];
         if (!res.data[idx] && !(depth.front[idx] < zq && zq < depth.back[idx])) {
           res.data[idx] = 255;
           count++;

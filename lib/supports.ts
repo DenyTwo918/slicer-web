@@ -128,11 +128,31 @@ export function placeSupports(
     }
     return true;
   };
-  // nejvyšší vrstva, od které je sloup na (x,y) volný až k desce
-  const highestFree = (from: number, x: number, y: number): number => {
-    let li = Math.min(from - 1, ctx.N - 1);
-    while (li >= 0 && !circleBlocked(ctx, li, x, y, radiusPx, W, H)) li--;
-    return li + 1;
+  // Je celý kuželový/šikmý horní segment volný? Pouze samotný kontaktní
+  // bod smí zasáhnout model. Bez této kontroly mohl vizuálně i tiskově vést
+  // spoj skrz trup a fillCircleIfEmpty jej jen nesouvisle "vykousal".
+  const topSegmentFree = (
+    anchorX: number,
+    anchorY: number,
+    anchorLayer: number,
+    pillarX: number,
+    pillarY: number,
+    pillarTop: number
+  ): boolean => {
+    const steps = Math.max(
+      anchorLayer - pillarTop,
+      Math.ceil(Math.hypot(pillarX - anchorX, pillarY - anchorY)),
+      1
+    );
+    for (let s = 1; s <= steps; s++) {
+      const f = s / steps;
+      const li = Math.round(anchorLayer - (anchorLayer - pillarTop) * f);
+      const cx = Math.round(anchorX + (pillarX - anchorX) * f);
+      const cy = Math.round(anchorY + (pillarY - anchorY) * f);
+      const r = Math.max(tipPx, Math.round(tipPx + (radiusPx - tipPx) * f));
+      if (circleBlocked(ctx, li, cx, cy, r, W, H)) return false;
+    }
+    return true;
   };
 
   const sorted = [...anchors].sort((a, b) => b.layer - a.layer);
@@ -173,7 +193,10 @@ export function placeSupports(
     };
 
     // 1) přímá cesta: tělo sloupu (pod špičkou) musí být celé volné
-    if (bodyFree(directPillarTop, a.x, a.y)) {
+    if (
+      bodyFree(directPillarTop, a.x, a.y) &&
+      topSegmentFree(a.x, a.y, top, a.x, a.y, directPillarTop)
+    ) {
       placed.push({
         x: a.x,
         y: a.y,
@@ -187,7 +210,7 @@ export function placeSupports(
     }
 
     // 2) posun do stran: najdi volné místo pro sloup („Max Contact Point Offset")
-    let found: { x: number; y: number; clearTop: number } | null = null;
+    let found: { x: number; y: number; pillarTop: number } | null = null;
     for (let ring = 2; ring <= maxOff && !found; ring += 2) {
       const step = Math.max(2, ring >> 2);
       for (let dy = -ring; dy <= ring && !found; dy += step) {
@@ -196,9 +219,11 @@ export function placeSupports(
           const nx = a.x + dx;
           const ny = a.y + dy;
           if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-          const clearTop = highestFree(top, nx, ny);
-          // sloup musí sahat aspoň do 40 % výšky kotve (jinak most moc dlouhý)
-          if (clearTop >= Math.floor(top * 0.4)) found = { x: nx, y: ny, clearTop };
+          // Hlavní sloup musí mít souvislou volnou cestu od desky. Nestačí
+          // masku v kolizi nevykreslit — vznikla by přerušená podpora skrz model.
+          if (!bodyFree(directPillarTop, nx, ny)) continue;
+          if (!topSegmentFree(a.x, a.y, top, nx, ny, directPillarTop)) continue;
+          found = { x: nx, y: ny, pillarTop: directPillarTop };
         }
       }
     }
@@ -207,12 +232,12 @@ export function placeSupports(
     placed.push({
       x: found.x,
       y: found.y,
-      top: found.clearTop,
+      top: found.pillarTop,
       anchorX: a.x,
       anchorY: a.y,
       anchorLayer: top,
     });
-    drawTipAndPillar(found.x, found.y, found.clearTop);
+    drawTipAndPillar(found.x, found.y, found.pillarTop);
   }
   return placed;
 }
@@ -292,6 +317,30 @@ function fillBraceLine(
     if (li < 0 || li >= ctx.N || cx < 0 || cy < 0 || cx >= W || cy >= H) continue;
     ctx.fill(li, cx, cy, r);
   }
+}
+
+/** Celá hladká vzpěra musí být v prázdném prostoru; jinak ji vůbec nevytvoříme. */
+export function braceLineFree(
+  ctx: PillarCtx,
+  line: BraceLine,
+  r: number,
+  W: number,
+  H: number
+): boolean {
+  const steps = Math.max(
+    Math.abs(line.l2 - line.l1),
+    Math.ceil(Math.hypot(line.x2 - line.x1, line.y2 - line.y1)),
+    1
+  );
+  for (let s = 0; s <= steps; s++) {
+    const f = s / steps;
+    const li = Math.round(line.l1 + (line.l2 - line.l1) * f);
+    const cx = Math.round(line.x1 + (line.x2 - line.x1) * f);
+    const cy = Math.round(line.y1 + (line.y2 - line.y1) * f);
+    if (li < 0 || li >= ctx.N || cx < 0 || cy < 0 || cx >= W || cy >= H) return false;
+    if (circleBlocked(ctx, li, cx, cy, r, W, H)) return false;
+  }
+  return true;
 }
 
 /**
@@ -381,7 +430,9 @@ export function generateSupports(
   const pxPerMm = 223.642 / W;
   const maxXY = Math.max(8, Math.round(15 / pxPerMm));
   const braceR = Math.max(1, Math.round(0.5 / pxPerMm)); // ~0,5 mm
-  const lines = crossBraceLines(pillars, maxXY);
+  const lines = crossBraceLines(pillars, maxXY).filter((line) =>
+    braceLineFree(ctx, line, braceR, W, H)
+  );
   for (const L of lines) fillBraceLine(ctx, L.x1, L.y1, L.l1, L.x2, L.y2, L.l2, braceR, W, H);
 
   return {

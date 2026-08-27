@@ -31,114 +31,6 @@ export interface LayerPreviewData {
   layerHeight: number;
 }
 
-/** Převede rastr vrstvy na canvas texturu (flipY opraví Y směr). */
-function rasterToTexture(
-  data: Uint8Array,
-  resX: number,
-  resY: number,
-  scale: number,
-  flipY: boolean
-): THREE.CanvasTexture {
-  const w = Math.max(1, Math.floor(resX / scale));
-  const h = Math.max(1, Math.floor(resY / scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("no 2d ctx");
-  const img = ctx.createImageData(w, h);
-  for (let y = 0; y < h; y++) {
-    const sy = flipY ? resY - 1 - Math.floor(y * scale) : Math.floor(y * scale);
-    for (let x = 0; x < w; x++) {
-      const sx = Math.floor(x * scale);
-      const v = data[sy * resX + sx];
-      const o = (y * w + x) * 4;
-      img.data[o] = 255;
-      img.data[o + 1] = 255;
-      img.data[o + 2] = 255;
-      img.data[o + 3] = v;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.needsUpdate = true;
-  return tex;
-}
-
-/** Řezová rovina tisku — ukazuje aktuální vrstvu ve 3D (jako slicery).
- *  Textura se vytvoří JEDNOU a při posuvu se jen přepisuje (žádné nové textury → plynulé). */
-function LayerPlane({
-  preview,
-  printer,
-}: {
-  preview: LayerPreviewData | null;
-  printer: PrinterProfile;
-}) {
-  const planeRef = useRef<THREE.Mesh>(null);
-  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    if (!preview) {
-      if (planeRef.current) planeRef.current.visible = false;
-      return;
-    }
-    if (!texture) {
-      const canvas = document.createElement("canvas");
-      canvas.width = preview.resX;
-      canvas.height = preview.resY;
-      canvasRef.current = canvas;
-      const tex = new THREE.CanvasTexture(canvas);
-      tex.needsUpdate = true;
-      setTexture(tex);
-      return;
-    }
-    // přepiš existující canvas (Y flip)
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
-    const img = ctx.createImageData(preview.resX, preview.resY);
-    for (let y = 0; y < preview.resY; y++) {
-      const sy = preview.resY - 1 - y;
-      for (let x = 0; x < preview.resX; x++) {
-        const v = preview.data[sy * preview.resX + x];
-        const o = (y * preview.resX + x) * 4;
-        img.data[o] = 255;
-        img.data[o + 1] = 255;
-        img.data[o + 2] = 255;
-        img.data[o + 3] = v;
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    texture.needsUpdate = true;
-    if (planeRef.current) {
-      planeRef.current.position.z = preview.z + 0.02;
-      planeRef.current.visible = true;
-    }
-  }, [preview, texture]);
-
-  useEffect(() => {
-    return () => {
-      texture?.dispose();
-      canvasRef.current = null;
-    };
-  }, [texture]);
-
-  return (
-    <mesh ref={planeRef} position={[0, 0, 0]} visible={false}>
-      <planeGeometry args={[printer.printX, printer.printY]} />
-      <meshBasicMaterial
-        map={texture ?? undefined}
-        color="#4ade80"
-        transparent
-        opacity={0.95}
-        depthWrite={false}
-        side={THREE.DoubleSide}
-      />
-    </mesh>
-  );
-}
-
 type PreviewSegment = {
   a: [number, number, number];
   b: [number, number, number];
@@ -236,7 +128,153 @@ function TipInstances({
   );
 }
 
-/** Raft jako vyhlazená alfa textura, nikoli tisíce voxelových kostek. */
+type Point2 = { x: number; y: number };
+
+function rdp(points: Point2[], tolerance: number): Point2[] {
+  if (points.length <= 2) return points;
+  const a = points[0];
+  const b = points[points.length - 1];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const denom = dx * dx + dy * dy;
+  let best = -1;
+  let bestDist = 0;
+  for (let i = 1; i < points.length - 1; i++) {
+    const p = points[i];
+    const t = denom > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / denom)) : 0;
+    const ex = p.x - (a.x + t * dx);
+    const ey = p.y - (a.y + t * dy);
+    const d = Math.hypot(ex, ey);
+    if (d > bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  if (best < 0 || bestDist <= tolerance) return [a, b];
+  const left = rdp(points.slice(0, best + 1), tolerance);
+  const right = rdp(points.slice(best), tolerance);
+  return [...left.slice(0, -1), ...right];
+}
+
+function simplifyClosed(points: Point2[], tolerance: number): Point2[] {
+  if (points.length < 6) return points;
+  let minI = 0;
+  let maxI = 0;
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].x < points[minI].x) minI = i;
+    if (points[i].x > points[maxI].x) maxI = i;
+  }
+  if (minI === maxI) return points;
+  const path = (from: number, to: number) => {
+    const out: Point2[] = [];
+    for (let i = from; ; i = (i + 1) % points.length) {
+      out.push(points[i]);
+      if (i === to) break;
+    }
+    return out;
+  };
+  const a = rdp(path(minI, maxI), tolerance);
+  const b = rdp(path(maxI, minI), tolerance);
+  return [...a.slice(0, -1), ...b.slice(0, -1)];
+}
+
+/** Jedno Chaikinovo kolo zakulatí hrany bez návratu k pixelovým schodům. */
+function smoothClosed(points: Point2[]): Point2[] {
+  if (points.length < 3) return points;
+  const out: Point2[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    out.push({ x: a.x * 0.75 + b.x * 0.25, y: a.y * 0.75 + b.y * 0.25 });
+    out.push({ x: a.x * 0.25 + b.x * 0.75, y: a.y * 0.25 + b.y * 0.75 });
+  }
+  return out;
+}
+
+/**
+ * Vektorizuje obrys binární raft masky. Raster zůstává zdrojem pravdy pro tisk,
+ * ale viewport dostane zjednodušený hladký polygon místo pixelové textury.
+ */
+function raftShapes(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  printer: PrinterProfile
+): THREE.Shape[] {
+  const outgoing = new Map<string, Point2[]>();
+  const edges: { a: Point2; b: Point2 }[] = [];
+  const key = (p: Point2) => `${p.x},${p.y}`;
+  const on = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < width && y < height && mask[y * width + x] !== 0;
+  const add = (a: Point2, b: Point2) => {
+    edges.push({ a, b });
+    const list = outgoing.get(key(a));
+    if (list) list.push(b);
+    else outgoing.set(key(a), [b]);
+  };
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!on(x, y)) continue;
+      if (!on(x, y - 1)) add({ x, y }, { x: x + 1, y });
+      if (!on(x + 1, y)) add({ x: x + 1, y }, { x: x + 1, y: y + 1 });
+      if (!on(x, y + 1)) add({ x: x + 1, y: y + 1 }, { x, y: y + 1 });
+      if (!on(x - 1, y)) add({ x, y: y + 1 }, { x, y });
+    }
+  }
+
+  const used = new Set<string>();
+  const edgeKey = (a: Point2, b: Point2) => `${key(a)}>${key(b)}`;
+  const loops: Point2[][] = [];
+  for (const edge of edges) {
+    if (used.has(edgeKey(edge.a, edge.b))) continue;
+    const loop: Point2[] = [edge.a];
+    let current = edge.a;
+    let next = edge.b;
+    for (let guard = 0; guard <= edges.length; guard++) {
+      used.add(edgeKey(current, next));
+      current = next;
+      if (key(current) === key(loop[0])) break;
+      loop.push(current);
+      const candidates = outgoing.get(key(current)) ?? [];
+      const candidate = candidates.find((p) => !used.has(edgeKey(current, p)));
+      if (!candidate) break;
+      next = candidate;
+    }
+    if (loop.length >= 3 && key(current) === key(loop[0])) loops.push(loop);
+  }
+
+  const sx = printer.printX / width;
+  const sy = printer.printY / height;
+  const tolerancePx = Math.max(1, 0.65 / Math.min(sx, sy));
+  const shapes: THREE.Shape[] = [];
+  for (const loop of loops) {
+    // Drobná vnitřní oka nejsou samostatné rafty. Raft je plná základna.
+    let area = 0;
+    for (let i = 0; i < loop.length; i++) {
+      const a = loop[i];
+      const b = loop[(i + 1) % loop.length];
+      area += a.x * b.y - b.x * a.y;
+    }
+    // Vnější obrysy mají při výše použité orientaci kladnou plochu; záporné
+    // smyčky jsou vnitřní díry. Raft má být plný, proto je nepřidáváme jako
+    // další překrývající se mesh (ten by blikáním vypadal rozbitě).
+    if (area < 4) continue;
+    const smooth = smoothClosed(simplifyClosed(loop, tolerancePx));
+    if (smooth.length < 3) continue;
+    const shape = new THREE.Shape();
+    smooth.forEach((p, i) => {
+      const wx = p.x * sx - printer.printX / 2;
+      const wy = printer.printY / 2 - p.y * sy;
+      if (i === 0) shape.moveTo(wx, wy);
+      else shape.lineTo(wx, wy);
+    });
+    shape.closePath();
+    shapes.push(shape);
+  }
+  return shapes;
+}
+
+/** Raft jako skutečný vektorový extrudovaný mesh, nikoli pixelová textura. */
 function RaftPreview({
   preview,
   printer,
@@ -246,55 +284,44 @@ function RaftPreview({
   printer: PrinterProfile;
   cutZ: number;
 }) {
-  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
-  useEffect(() => {
-    const mask = preview.raftMask;
-    if (!mask || mask.length === 0) {
-      setTexture(null);
-      return;
-    }
-    const canvas = document.createElement("canvas");
-    canvas.width = preview.resolutionX;
-    canvas.height = preview.resolutionY;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const img = ctx.createImageData(canvas.width, canvas.height);
-    for (let y = 0; y < canvas.height; y++) {
-      const sy = canvas.height - 1 - y;
-      for (let x = 0; x < canvas.width; x++) {
-        const on = mask[sy * canvas.width + x] !== 0;
-        const o = (y * canvas.width + x) * 4;
-        img.data[o] = 74;
-        img.data[o + 1] = 222;
-        img.data[o + 2] = 128;
-        img.data[o + 3] = on ? 255 : 0;
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.needsUpdate = true;
-    setTexture(tex);
-    return () => tex.dispose();
-  }, [preview]);
-
   const height = Math.max(
     preview.layerHeight,
     (preview.raftLayers ?? 1) * preview.layerHeight
   );
-  if (!texture || cutZ + 1e-6 < height) return null;
+  const geometry = useMemo(() => {
+    const mask = preview.raftMask;
+    if (!mask || mask.length === 0) return null;
+    const shapes = raftShapes(
+      mask,
+      preview.resolutionX,
+      preview.resolutionY,
+      printer
+    );
+    if (shapes.length === 0) return null;
+    return new THREE.ExtrudeGeometry(shapes, {
+      depth: height,
+      bevelEnabled: true,
+      bevelSegments: 2,
+      bevelSize: Math.min(0.35, height * 0.3),
+      bevelThickness: Math.min(0.2, height * 0.2),
+      curveSegments: 4,
+    });
+  }, [preview, printer, height]);
+  const clippingPlane = useMemo(
+    () => new THREE.Plane(new THREE.Vector3(0, 0, -1), cutZ),
+    [cutZ]
+  );
+  useEffect(() => () => geometry?.dispose(), [geometry]);
+  if (!geometry || cutZ <= 0) return null;
   return (
-    <mesh position={[0, 0, height + 0.01]} receiveShadow>
-      <planeGeometry args={[printer.printX, printer.printY]} />
+    <mesh geometry={geometry} castShadow receiveShadow>
       <meshStandardMaterial
-        map={texture}
-        color="#ffffff"
-        transparent
-        alphaTest={0.35}
+        color="#22c55e"
+        metalness={0.03}
+        roughness={0.55}
+        clippingPlanes={[clippingPlane]}
         depthWrite
         depthTest
-        side={THREE.DoubleSide}
       />
     </mesh>
   );
@@ -616,7 +643,8 @@ export default function Viewport({
 
       <BuildPlate printer={printer} />
       <Vat printer={printer} />
-      <LayerPlane preview={layerPreview ?? null} printer={printer} />
+      {/* Žádná rasterová vrstva přes model: při řezu zůstává vidět původní STL
+          mesh 1:1. Starý downsampled zelený rastr byl zdrojem voxelového vzhledu. */}
 
       {/* SLA podpory jako hladké geometrické prvky; nikdy se nerekonstruují z pixelů. */}
       {supportPreview && layerPreview && (
