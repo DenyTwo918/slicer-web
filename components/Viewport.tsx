@@ -15,6 +15,10 @@ import type { StlMesh } from "@/lib/stl";
 import type { ModelTransform } from "@/lib/transform";
 import type { PrinterProfile } from "@/lib/profiles";
 import type { SupportPreviewData } from "@/lib/supports";
+import {
+  simplifyClosedPreviewContour,
+  type PreviewPoint2 as Point2,
+} from "@/lib/previewContour";
 
 interface ViewModel {
   id: number;
@@ -128,56 +132,6 @@ function TipInstances({
   );
 }
 
-type Point2 = { x: number; y: number };
-
-function rdp(points: Point2[], tolerance: number): Point2[] {
-  if (points.length <= 2) return points;
-  const a = points[0];
-  const b = points[points.length - 1];
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const denom = dx * dx + dy * dy;
-  let best = -1;
-  let bestDist = 0;
-  for (let i = 1; i < points.length - 1; i++) {
-    const p = points[i];
-    const t = denom > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / denom)) : 0;
-    const ex = p.x - (a.x + t * dx);
-    const ey = p.y - (a.y + t * dy);
-    const d = Math.hypot(ex, ey);
-    if (d > bestDist) {
-      bestDist = d;
-      best = i;
-    }
-  }
-  if (best < 0 || bestDist <= tolerance) return [a, b];
-  const left = rdp(points.slice(0, best + 1), tolerance);
-  const right = rdp(points.slice(best), tolerance);
-  return [...left.slice(0, -1), ...right];
-}
-
-function simplifyClosed(points: Point2[], tolerance: number): Point2[] {
-  if (points.length < 6) return points;
-  let minI = 0;
-  let maxI = 0;
-  for (let i = 1; i < points.length; i++) {
-    if (points[i].x < points[minI].x) minI = i;
-    if (points[i].x > points[maxI].x) maxI = i;
-  }
-  if (minI === maxI) return points;
-  const path = (from: number, to: number) => {
-    const out: Point2[] = [];
-    for (let i = from; ; i = (i + 1) % points.length) {
-      out.push(points[i]);
-      if (i === to) break;
-    }
-    return out;
-  };
-  const a = rdp(path(minI, maxI), tolerance);
-  const b = rdp(path(maxI, minI), tolerance);
-  return [...a.slice(0, -1), ...b.slice(0, -1)];
-}
-
 /** Jedno Chaikinovo kolo zakulatí hrany bez návratu k pixelovým schodům. */
 function smoothClosed(points: Point2[]): Point2[] {
   if (points.length < 3) return points;
@@ -202,7 +156,7 @@ function raftShapes(
   printer: PrinterProfile,
   preserveHoles = false,
   threshold = 0,
-  smooth = true
+  smooth: boolean | "faithful" = true
 ): THREE.Shape[] {
   const outgoing = new Map<string, Point2[]>();
   const edges: { a: Point2; b: Point2 }[] = [];
@@ -248,7 +202,11 @@ function raftShapes(
 
   const sx = printer.printX / width;
   const sy = printer.printY / height;
-  const tolerancePx = smooth ? Math.max(1, 0.65 / Math.min(sx, sy)) : 0;
+  const tolerancePx = smooth === "faithful"
+    ? 0.75
+    : smooth
+      ? Math.max(1, 0.65 / Math.min(sx, sy))
+      : 0;
   const pointInLoop = (loop: Point2[], point: Point2) => {
     let inside = false;
     for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
@@ -270,9 +228,10 @@ function raftShapes(
     // Tisková vrstva musí být 1:1 s bitmapou. Chaikin + RDP jsou vhodné pro
     // vizuální raft, ale u duté skořepiny posouvaly stěny, zavíraly malé otvory
     // a vytvářely zdánlivé vady, které ve skutečné vrstvě nebyly.
-    const displayLoop = smooth
-      ? smoothClosed(simplifyClosed(loop, tolerancePx))
+    const simplified = smooth
+      ? simplifyClosedPreviewContour(loop, tolerancePx)
       : loop;
+    const displayLoop = smooth === true ? smoothClosed(simplified) : simplified;
     if (displayLoop.length < 3) continue;
     entries.push({ loop: displayLoop, area });
   }
@@ -310,7 +269,10 @@ function raftShapes(
 /** Skutečná aktuální tisková vrstva — vektorově, bez voxelové textury. */
 function SliceLayerSurface({ layer, printer }: { layer: LayerPreviewData; printer: PrinterProfile }) {
   const geometry = useMemo(() => {
-    const shapes = raftShapes(layer.data, layer.resX, layer.resY, printer, true, 24, false);
+    // Vrstva zůstává topologicky věrná low-res masce, pouze se odstraní viditelné
+    // 16× pixelové schody. Na rozdíl od raftu se nepoužívá Chaikin, který by
+    // posouval tenké stěny a zavíral malé otvory.
+    const shapes = raftShapes(layer.data, layer.resX, layer.resY, printer, true, 24, "faithful");
     if (shapes.length === 0) return null;
     const g = new THREE.ShapeGeometry(shapes);
     g.translate(0, 0, layer.z + 0.006);
