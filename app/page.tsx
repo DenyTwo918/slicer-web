@@ -30,6 +30,11 @@ import type { SupportPreviewData } from "@/lib/supports";
 import type { PrinterProfile } from "@/lib/profiles";
 import { createSliceGeneration } from "@/lib/sliceGeneration";
 import { buildPm7 } from "@/lib/pm7";
+import {
+  decodePw0Crop,
+  openPm7PreviewArchive,
+  type Pm7PreviewArchive,
+} from "@/lib/exactLayerPreview";
 import { sendPrintToPrinter, getStoredJwt, setStoredJwt } from "@/lib/anycubic";
 import {
   PRINTERS,
@@ -168,6 +173,7 @@ export default function Home() {
   });
 
   const [sliceResult, setSliceResult] = useState<SliceResult | null>(null);
+  const [exactPreview, setExactPreview] = useState<Pm7PreviewArchive | null>(null);
   const [supportPreview, setSupportPreview] = useState<SupportPreviewData | null>(null);
   const [sliceDiagnostics, setSliceDiagnostics] = useState<SliceDiagnostics | null>(null);
 
@@ -197,6 +203,7 @@ export default function Home() {
   const invalidateSlice = useCallback(() => {
     sliceGenerationRef.current.invalidate();
     setSliceResult(null);
+    setExactPreview(null);
     setSupportPreview(null);
     setSliceDiagnostics(null);
     setSliceIdx(0);
@@ -575,7 +582,7 @@ async function genPreviewBytes(
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-/** Full-res (12K) streaming export ve workeru. */
+/** Nativní full-res streaming export ve workeru. */
 function exportFullInWorker(
   models: ModelItem[],
   settings: SliceSettings,
@@ -815,19 +822,63 @@ const doSlice = useCallback(async () => {
           samples,
         };
       }
+      // Náhled nesmí používat 1/16 pracovní raster. Vygenerujeme stejná nativní
+      // PW0 data, která půjdou do tiskárny, a slider dekóduje přímo vybranou vrstvu.
+      const previewPngs = await Promise.all([
+        genPreviewBytes(result, 0, 224, 168),
+        genPreviewBytes(result, Math.floor(result.layers.length / 2), 224, 168),
+      ]);
+      if (!sliceGenerationRef.current.isCurrent(generation)) return;
+      const perLayer = settings.normalExposure +
+        2 * (settings.zupHeight / Math.max(settings.zupSpeed, 0.1)) + 2;
+      const bottomTime = settings.bottomLayers * (
+        settings.bottomExposure +
+        2 * (settings.zupHeightBottom / Math.max(settings.zupSpeedBottom, 0.1)) + 2
+      );
+      const printTimeS = Math.round(
+        bottomTime + Math.max(0, result.layers.length - settings.bottomLayers) * perLayer
+      );
+      const bytes = await exportFullInWorker(models, settings, printer, {
+        bottomExposure: settings.bottomExposure,
+        normalExposure: settings.normalExposure,
+        bottomLayers: settings.bottomLayers,
+        zupHeightBottom: settings.zupHeightBottom,
+        zupSpeedBottom: settings.zupSpeedBottom,
+        zupHeight: settings.zupHeight,
+        zupSpeed: settings.zupSpeed,
+        printTimeS,
+      }, previewPngs, diagnostics, (done, total) => {
+        if (sliceGenerationRef.current.isCurrent(generation)) setExportProgress(`${done}/${total}`);
+      });
+      if (!sliceGenerationRef.current.isCurrent(generation)) return;
+      const archive = openPm7PreviewArchive(bytes, printer.resX, printer.resY);
+      if (archive.layerCount !== result.layers.length) {
+        throw new Error(
+          `Přesný náhled má ${archive.layerCount} vrstev, pracovní řez ${result.layers.length}.`
+        );
+      }
+      setExactPreview(archive);
+      setLastExport({ bytes, name: `${exportName}.${printer.keySuffix}` });
+      setExportProgress(null);
       showToast(
         "ok",
-        `Naslicováno ✓ · ${result.layers.length} vrstev · ${result.layerHeight} mm${settings.supports ? " · podpory" : ""}${settings.aa ? " · AA" : ""}${diagnostics.islandCount ? ` · ${diagnostics.islandCount} islandů` : " · bez islandů"}`
+        `Naslicováno přesně ✓ · ${result.layers.length} vrstev · nativně ${printer.resX}×${printer.resY}${settings.supports ? " · podpory" : ""}${diagnostics.islandCount ? ` · ${diagnostics.islandCount} islandů` : " · bez islandů"}`
       );
     }
   } catch (e) {
     if (sliceGenerationRef.current.isCurrent(generation)) {
+      setSliceResult(null);
+      setExactPreview(null);
+      setSupportPreview(null);
+      setSliceDiagnostics(null);
+      setLastExport(null);
+      setExportProgress(null);
       showToast("err", e instanceof Error ? e.message : "Slicování selhalo.", 8000);
     }
   } finally {
     if (sliceGenerationRef.current.isCurrent(generation)) setSlicing(false);
   }
-}, [models, settings, printer, invalidateSlice]);
+}, [models, settings, printer, exportName, invalidateSlice]);
 
   const estPrintTime = useMemo(() => {
     if (!sliceResult) return 0;
@@ -857,6 +908,9 @@ const doSlice = useCallback(async () => {
     const activeSlice = sliceOverride ?? sliceResult;
     const activeDiagnostics = diagnosticsOverride ?? sliceDiagnostics;
     if (!activeSlice || models.length === 0) return null;
+    if (!sliceOverride && lastExport) {
+      return { bytes: lastExport.bytes, name: `${exportName}.${printer.keySuffix}` };
+    }
     const activePrintTime = sliceOverride
       ? Math.round(
           settings.bottomLayers *
@@ -921,7 +975,7 @@ const doSlice = useCallback(async () => {
       if (!sliceGenerationRef.current.isCurrent(generation)) return null;
       return { bytes, name: `${exportName}.${printer.keySuffix}` };
     }
-  }, [sliceResult, models, settings, printer, exportName, estPrintTime, sliceDiagnostics]);
+  }, [sliceResult, models, settings, printer, exportName, estPrintTime, sliceDiagnostics, lastExport]);
 
   const exportPm7 = useCallback(async () => {
     const generation = sliceGenerationRef.current.capture();
@@ -1106,17 +1160,24 @@ const doSlice = useCallback(async () => {
   const allFit = viewModels.every((m) => m.fits);
 
   const layerPreview = useMemo(
-    () =>
-      sliceResult
-        ? {
-            z: sliceResult.layers[sliceIdx].z,
-            data: sliceResult.layers[sliceIdx].data,
-            resX: sliceResult.resolutionX,
-            resY: sliceResult.resolutionY,
-            layerHeight: sliceResult.layerHeight,
-          }
-        : null,
-    [sliceResult, sliceIdx]
+    () => {
+      if (!sliceResult || !exactPreview) return null;
+      const encoded = exactPreview.layers[sliceIdx];
+      if (!encoded) return null;
+      const crop = decodePw0Crop(encoded, exactPreview.resX, exactPreview.resY);
+      return {
+        z: sliceResult.layers[sliceIdx].z,
+        data: crop.data,
+        resX: crop.width,
+        resY: crop.height,
+        offsetX: crop.offsetX,
+        offsetY: crop.offsetY,
+        fullResX: crop.fullWidth,
+        fullResY: crop.fullHeight,
+        layerHeight: sliceResult.layerHeight,
+      };
+    },
+    [sliceResult, exactPreview, sliceIdx]
   );
 
   const fmtTime = (sec: number) => {
@@ -1465,7 +1526,7 @@ const doSlice = useCallback(async () => {
               {exporting ? "…" : "USB"}
             </button>
             {exportProgress && (
-              <div className="fab-progress">12K export {exportProgress}</div>
+              <div className="fab-progress">Nativní vrstvy {exportProgress}</div>
             )}
           </div>
         )}

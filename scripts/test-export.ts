@@ -12,11 +12,11 @@ import { translateMesh } from "../lib/transform";
 import { getPrinter } from "../lib/profiles";
 import { unzipSync } from "fflate";
 
-const MX = 11520;
+const MX = 13312;
 const MY = 5120;
 const SLICE_OPTS = {
   layerHeight: 0.1,
-  resolutionX: 1440, // 11520 / 8 (M7)
+  resolutionX: 1664, // 13312 / 8 (M7 14K)
   resolutionY: 640, // 5120 / 8
   plateW: 223.642,
   plateH: 126.48,
@@ -128,14 +128,22 @@ async function main() {
   );
 
   // 5) parametrizace tiskárny (M5s)
-  const bytes2 = await buildPm7([cube], sliceAA, { printer: getPrinter("m5s") });
+  const m5s = getPrinter("m5s");
+  const m5sSlice = applyAA(sliceMesh(cube, {
+    layerHeight: 0.1,
+    resolutionX: m5s.resX / 8,
+    resolutionY: m5s.resY / 8,
+    plateW: m5s.printX,
+    plateH: m5s.printY,
+  }));
+  const bytes2 = await buildPm7([cube], m5sSlice, { printer: m5s });
   const files2 = unzipSync(bytes2);
   const pwsp = new TextDecoder().decode(files2["anycubic_photon_resins.pwsp"]);
   const layerCount2 = Object.keys(files2).filter((n) => n.startsWith("layer_images/")).length;
   console.log(
     "\n[5] M5s profil:", pwsp.includes("Photon Mono M5s") ? "[OK]" : "[CHYBA]",
     "· vrstev v souboru:", layerCount2,
-    layerCount2 === slice.layers.length ? "[OK]" : "[CHYBA]"
+    layerCount2 === m5sSlice.layers.length ? "[OK]" : "[CHYBA]"
   );
 
   console.log("\nHOTOVO — vse proselo");

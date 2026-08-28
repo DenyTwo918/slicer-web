@@ -53,12 +53,14 @@ export const PRINTERS: PrinterProfile[] = [
     id: "m7",
     name: "Photon Mono M7",
     brand: "Anycubic",
-    resX: 11520, // ověřeno z cloudu (firmware 4.0.6.7) — 12K, ne 14K!
+    // Anycubic manual + current official product specification: 14K LCD.
+    // A 11520-wide profile made both preview and exported pixels physically too wide.
+    resX: 13312,
     resY: 5120,
     printX: 223.642,
     printY: 126.48,
     printZ: 230,
-    pixelXUm: 19.4, // 223.642/11520
+    pixelXUm: 16.8,
     pixelYUm: 24.7, // 126.48/5120
     keySuffix: "pm7",
     keyImageFormat: "pw0Img",

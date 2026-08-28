@@ -34,6 +34,11 @@ export interface LayerPreviewData {
   resX: number;
   resY: number;
   layerHeight: number;
+  /** Crop position inside the printer's native LCD bitmap. */
+  offsetX?: number;
+  offsetY?: number;
+  fullResX?: number;
+  fullResY?: number;
 }
 
 type PreviewSegment = {
@@ -157,12 +162,14 @@ function raftShapes(
   printer: PrinterProfile,
   preserveHoles = false,
   threshold = 0,
-  smooth: boolean | "faithful" = true
+  smooth: boolean | "faithful" = true,
+  mapping?: { offsetX: number; offsetY: number; fullWidth: number; fullHeight: number }
 ): THREE.Shape[] {
+  if (width <= 0 || height <= 0 || mask.length === 0) return [];
   const loops = traceMaskContours(mask, width, height, threshold);
 
-  const sx = printer.printX / width;
-  const sy = printer.printY / height;
+  const sx = printer.printX / (mapping?.fullWidth ?? width);
+  const sy = printer.printY / (mapping?.fullHeight ?? height);
   const tolerancePx = smooth === "faithful"
     ? 0.75
     : smooth
@@ -200,8 +207,8 @@ function raftShapes(
   const shapes: THREE.Shape[] = [];
   const writePath = (path: THREE.Path, loop: Point2[]) => {
     loop.forEach((p, i) => {
-      const wx = p.x * sx - printer.printX / 2;
-      const wy = printer.printY / 2 - p.y * sy;
+      const wx = (p.x + (mapping?.offsetX ?? 0)) * sx - printer.printX / 2;
+      const wy = printer.printY / 2 - (p.y + (mapping?.offsetY ?? 0)) * sy;
       if (i === 0) path.moveTo(wx, wy);
       else path.lineTo(wx, wy);
     });
@@ -230,10 +237,17 @@ function raftShapes(
 /** Skutečná aktuální tisková vrstva — vektorově, bez voxelové textury. */
 function SliceLayerSurface({ layer, printer }: { layer: LayerPreviewData; printer: PrinterProfile }) {
   const geometry = useMemo(() => {
-    // Vrstva zůstává topologicky věrná low-res masce, pouze se odstraní viditelné
-    // 16× pixelové schody. Na rozdíl od raftu se nepoužívá Chaikin, který by
-    // posouval tenké stěny a zavíral malé otvory.
-    const shapes = raftShapes(layer.data, layer.resX, layer.resY, printer, true, 24, "faithful");
+    // Přímý obrys nativní PW0 vrstvy. Crop šetří paměť; mapping jej vrací na
+    // přesné souřadnice LCD bez zvětšování 1/16 pracovního rastru.
+    const mapping = layer.fullResX && layer.fullResY ? {
+      offsetX: layer.offsetX ?? 0,
+      offsetY: layer.offsetY ?? 0,
+      fullWidth: layer.fullResX,
+      fullHeight: layer.fullResY,
+    } : undefined;
+    const shapes = raftShapes(
+      layer.data, layer.resX, layer.resY, printer, true, 24, "faithful", mapping
+    );
     if (shapes.length === 0) return null;
     const g = new THREE.ShapeGeometry(shapes);
     g.translate(0, 0, layer.z + 0.006);
