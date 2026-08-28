@@ -24,10 +24,11 @@ import {
   type ModelTransform,
 } from "@/lib/transform";
 import type { SliceResult } from "@/lib/slice";
-import { runSlicePipeline, type PipelineSettings } from "@/lib/pipeline";
+import { runSlicePipeline, type PipelineSettings, type SliceDiagnostics } from "@/lib/pipeline";
 import type { SliceWorkerResponse } from "@/lib/slice.worker";
 import type { SupportPreviewData } from "@/lib/supports";
 import type { PrinterProfile } from "@/lib/profiles";
+import { createSliceGeneration } from "@/lib/sliceGeneration";
 import { buildPm7 } from "@/lib/pm7";
 import { sendPrintToPrinter, getStoredJwt, setStoredJwt } from "@/lib/anycubic";
 import {
@@ -168,18 +169,7 @@ export default function Home() {
 
   const [sliceResult, setSliceResult] = useState<SliceResult | null>(null);
   const [supportPreview, setSupportPreview] = useState<SupportPreviewData | null>(null);
-
-  /**
-   * Jediný způsob, jak měnit nastavení: jakákoliv změna ZRUŠÍ náhled tisku
-   * (starý výsledek už neodpovídá nastavení). Modely zůstávají zachované.
-   */
-  const updateSettings = useCallback((updater: (s: SliceSettings) => SliceSettings) => {
-    setSettings(updater);
-    setSliceResult(null);
-    setSupportPreview(null);
-    setSliceIdx(0);
-    setLastExport(null);
-  }, []);
+  const [sliceDiagnostics, setSliceDiagnostics] = useState<SliceDiagnostics | null>(null);
 
   const [sliceIdx, setSliceIdx] = useState(0);
   const [slicing, setSlicing] = useState(false);
@@ -201,9 +191,31 @@ export default function Home() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sliceWorkerRef = useRef<Worker | null>(null);
   const sliceSeqRef = useRef(0);
+  const sliceGenerationRef = useRef(createSliceGeneration());
+
+  /** Central invalidation also makes every in-flight slice/export response stale. */
+  const invalidateSlice = useCallback(() => {
+    sliceGenerationRef.current.invalidate();
+    setSliceResult(null);
+    setSupportPreview(null);
+    setSliceDiagnostics(null);
+    setSliceIdx(0);
+    setLastExport(null);
+    setSlicing(false);
+    setExporting(false);
+    setSending(false);
+    setExportProgress(null);
+  }, []);
+
+  /** Every settings change clears the preview while preserving the models. */
+  const updateSettings = useCallback((updater: (s: SliceSettings) => SliceSettings) => {
+    setSettings(updater);
+    invalidateSlice();
+  }, [invalidateSlice]);
 
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
+    sliceGenerationRef.current.invalidate();
     sliceWorkerRef.current?.terminate();
     sliceWorkerRef.current = null;
   }, []);
@@ -239,11 +251,9 @@ export default function Home() {
     modelsRef.current = nextModels;
     setModels(nextModels);
     setSelectedId(item.id);
-    setSliceResult(null);
-    setSupportPreview(null);
-    setLastExport(null);
+    invalidateSlice();
     showToast("ok", `Model přidán ✓ · ${name}`);
-  }, []);
+  }, [invalidateSlice]);
 
   // ref na aktuální modely (pro addModel bez závislosti)
   const modelsRef = useRef<ModelItem[]>([]);
@@ -291,11 +301,9 @@ export default function Home() {
     modelsRef.current = [];
     setModels([]);
     setSelectedId(null);
-    setSliceResult(null);
-    setSupportPreview(null);
-    setLastExport(null);
+    invalidateSlice();
     showToast("ok", "Vše smazáno");
-  }, []);
+  }, [invalidateSlice]);
 
   const [light, setLight] = useState(false);
   useEffect(() => {
@@ -335,16 +343,11 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [printerId, resinId, filmId, settings]);
 
-  // změna tiskárny = jiné rozlišení → zneplatnit náhled (modely zůstávají)
-  const lastPrinterId = useRef(printerId);
-  useEffect(() => {
-    if (lastPrinterId.current !== printerId) {
-      lastPrinterId.current = printerId;
-      setSliceResult(null);
-      setSupportPreview(null);
-      setLastExport(null);
-    }
-  }, [printerId]);
+  // Změna tiskárny mění rozlišení, proto musí invalidace proběhnout synchronně s volbou.
+  const selectPrinter = useCallback((id: string) => {
+    invalidateSlice();
+    setPrinterId(id);
+  }, [invalidateSlice]);
 
   const selectResin = useCallback(
     (id: string) => {
@@ -382,10 +385,8 @@ export default function Home() {
       modelsRef.current = next;
       return next;
     });
-    setSliceResult(null);
-    setSupportPreview(null);
-    setLastExport(null);
-  }, []);
+    invalidateSlice();
+  }, [invalidateSlice]);
 
   const onMove = useCallback(
     (id: number, x: number, y: number) => {
@@ -454,10 +455,8 @@ export default function Home() {
       return next;
     });
     setSelectedId(null);
-    setSliceResult(null);
-    setSupportPreview(null);
-    setLastExport(null);
-  }, [selectedId]);
+    invalidateSlice();
+  }, [selectedId, invalidateSlice]);
 
   const removeModel = useCallback(
     (id: number) => {
@@ -467,11 +466,9 @@ export default function Home() {
         return next;
       });
       if (selectedId === id) setSelectedId(null);
-      setSliceResult(null);
-      setSupportPreview(null);
-      setLastExport(null);
+      invalidateSlice();
     },
-    [selectedId]
+    [selectedId, invalidateSlice]
   );
 
   const duplicateSel = useCallback(() => {
@@ -490,11 +487,9 @@ export default function Home() {
       return next;
     });
     setSelectedId(copy.id);
-    setSliceResult(null);
-    setSupportPreview(null);
-    setLastExport(null);
+    invalidateSlice();
     showToast("ok", "Model duplikován ✓");
-  }, [selectedId, models]);
+  }, [selectedId, models, invalidateSlice]);
 
   const downloadSelStl = useCallback(() => {
     if (!selected) return;
@@ -596,6 +591,7 @@ function exportFullInWorker(
     printTimeS: number;
   },
   previews: [Uint8Array, Uint8Array],
+  diagnostics: SliceDiagnostics | null,
   onProgress: (done: number, total: number) => void
 ): Promise<Uint8Array> {
   const worker = getSliceWorker();
@@ -667,6 +663,7 @@ function exportFullInWorker(
       },
       exposures,
       previews,
+      drainAnchors: diagnostics?.drainAnchors ?? [],
     });
   });
 }
@@ -683,6 +680,7 @@ function sliceInWorker(
   result: SliceResult | null;
   supportPreview: SupportPreviewData | null;
   engine: "gpu" | "cpu";
+  diagnostics: SliceDiagnostics;
 }> {
   const payload = {
     id: ++sliceSeqRef.current,
@@ -742,6 +740,7 @@ function sliceInWorker(
           result: msg.result,
           supportPreview: msg.supportPreview ?? null,
           engine: msg.engine ?? "cpu",
+          diagnostics: msg.diagnostics ?? { islandCount: 0, islands: [], truncated: false, drainAnchors: [] },
         });
       } else {
         reject(new Error(msg.error ?? "Slicování selhalo."));
@@ -774,12 +773,16 @@ function sliceInWorker(
 
 const doSlice = useCallback(async () => {
   if (models.length === 0) return;
+  invalidateSlice();
+  const generation = sliceGenerationRef.current.startRequest();
   setSlicing(true);
   try {
-    const { result, supportPreview: sp, engine } = await sliceInWorker(models, settings, printer);
+    const { result, supportPreview: sp, engine, diagnostics } = await sliceInWorker(models, settings, printer);
+    if (!sliceGenerationRef.current.isCurrent(generation)) return;
     if (result) {
       setSliceResult(result);
       setSupportPreview(sp);
+      setSliceDiagnostics(diagnostics);
       // začni od horní vrstvy → model je v 3D vidět celý, tahem slideru dolů vidíš řez
       setSliceIdx(Math.max(0, result.layers.length - 1));
       if (typeof window !== "undefined") {
@@ -814,15 +817,17 @@ const doSlice = useCallback(async () => {
       }
       showToast(
         "ok",
-        `Naslicováno ✓ · ${result.layers.length} vrstev · ${result.layerHeight} mm${settings.supports ? " · podpory" : ""}${settings.aa ? " · AA" : ""}`
+        `Naslicováno ✓ · ${result.layers.length} vrstev · ${result.layerHeight} mm${settings.supports ? " · podpory" : ""}${settings.aa ? " · AA" : ""}${diagnostics.islandCount ? ` · ${diagnostics.islandCount} islandů` : " · bez islandů"}`
       );
     }
   } catch (e) {
-    showToast("err", e instanceof Error ? e.message : "Slicování selhalo.", 8000);
+    if (sliceGenerationRef.current.isCurrent(generation)) {
+      showToast("err", e instanceof Error ? e.message : "Slicování selhalo.", 8000);
+    }
   } finally {
-    setSlicing(false);
+    if (sliceGenerationRef.current.isCurrent(generation)) setSlicing(false);
   }
-}, [models, settings, printer]);
+}, [models, settings, printer, invalidateSlice]);
 
   const estPrintTime = useMemo(() => {
     if (!sliceResult) return 0;
@@ -840,11 +845,17 @@ const doSlice = useCallback(async () => {
     );
   }, [sliceResult, settings]);
 
-  const buildExport = useCallback(async (sliceOverride?: SliceResult): Promise<{ bytes: Uint8Array; name: string } | null> => {
+  const buildExport = useCallback(async (
+    sliceOverride?: SliceResult,
+    diagnosticsOverride?: SliceDiagnostics,
+    generation = sliceGenerationRef.current.capture(),
+  ): Promise<{ bytes: Uint8Array; name: string } | null> => {
+    if (!sliceGenerationRef.current.isCurrent(generation)) return null;
     if (printer.exportSupported === false) {
       throw new Error(`${printer.name}: tiskový formát .${printer.keySuffix} zatím není podporovaný.`);
     }
     const activeSlice = sliceOverride ?? sliceResult;
+    const activeDiagnostics = diagnosticsOverride ?? sliceDiagnostics;
     if (!activeSlice || models.length === 0) return null;
     const activePrintTime = sliceOverride
       ? Math.round(
@@ -868,6 +879,7 @@ const doSlice = useCallback(async () => {
         168
       ),
     ]);
+    if (!sliceGenerationRef.current.isCurrent(generation)) return null;
     // export VŽDY v nativním rozlišení tiskárny (full-res streaming ve workeru)
     try {
       const bytes = await exportFullInWorker(models, settings, printer, {
@@ -879,12 +891,16 @@ const doSlice = useCallback(async () => {
         zupHeight: settings.zupHeight,
         zupSpeed: settings.zupSpeed,
         printTimeS: activePrintTime,
-      }, previews, (done, total) => {
-        setExportProgress(`${done}/${total}`);
+      }, previews, activeDiagnostics, (done, total) => {
+        if (sliceGenerationRef.current.isCurrent(generation)) {
+          setExportProgress(`${done}/${total}`);
+        }
       });
+      if (!sliceGenerationRef.current.isCurrent(generation)) return null;
       setExportProgress(null);
       return { bytes, name: `${exportName}.${printer.keySuffix}` };
     } catch (e) {
+      if (!sliceGenerationRef.current.isCurrent(generation)) return null;
       setExportProgress(null);
       showToast("err", "Full-res export selhal → záložně v náhledovém rozlišení.", 6000);
       const bytes = await buildPm7(
@@ -902,45 +918,62 @@ const doSlice = useCallback(async () => {
           printTimeS: activePrintTime,
         }
       );
+      if (!sliceGenerationRef.current.isCurrent(generation)) return null;
       return { bytes, name: `${exportName}.${printer.keySuffix}` };
     }
-  }, [sliceResult, models, settings, printer, exportName, estPrintTime]);
+  }, [sliceResult, models, settings, printer, exportName, estPrintTime, sliceDiagnostics]);
 
   const exportPm7 = useCallback(async () => {
+    const generation = sliceGenerationRef.current.capture();
     setExporting(true);
     try {
-      const ex = await buildExport();
+      const ex = await buildExport(undefined, undefined, generation);
+      if (!sliceGenerationRef.current.isCurrent(generation)) return;
       if (!ex) return;
       downloadBytes(ex.bytes, ex.name);
       setLastExport(ex);
       showToast("ok", "Soubor .pm7 stažen ✓ · USB: kořen disku, ≤15 znaků, FAT32", 10000);
     } catch (e) {
-      showToast("err", e instanceof Error ? e.message : "Export .pm7 selhal.", 8000);
+      if (sliceGenerationRef.current.isCurrent(generation)) {
+        showToast("err", e instanceof Error ? e.message : "Export .pm7 selhal.", 8000);
+      }
     } finally {
-      setExporting(false);
+      if (sliceGenerationRef.current.isCurrent(generation)) setExporting(false);
     }
   }, [buildExport]);
 
   const printNow = useCallback(async () => {
     if (models.length === 0) return;
+    let generation: number;
+    if (sliceResult) {
+      generation = sliceGenerationRef.current.capture();
+    } else {
+      invalidateSlice();
+      generation = sliceGenerationRef.current.startRequest();
+    }
     setSending(true);
     try {
       // 1) slicovat, pokud ještě není
       let activeSlice = sliceResult;
+      let activeDiagnostics = sliceDiagnostics;
       if (!activeSlice) {
         showToast("ok", "Slicuji…", 3000);
-        const { result, supportPreview: sp } = await sliceInWorker(models, settings, printer);
+        const { result, supportPreview: sp, diagnostics } = await sliceInWorker(models, settings, printer);
+        if (!sliceGenerationRef.current.isCurrent(generation)) return;
         if (!result) {
           showToast("err", "Slicování selhalo.", 8000);
           return;
         }
         setSupportPreview(sp);
         setSliceResult(result);
+        setSliceDiagnostics(diagnostics);
         setSliceIdx(0);
         activeSlice = result;
+        activeDiagnostics = diagnostics;
       }
       // 2) připravit soubor v paměti (bez stažení)
-      const ex = await buildExport(activeSlice);
+      const ex = await buildExport(activeSlice, activeDiagnostics ?? undefined, generation);
+      if (!sliceGenerationRef.current.isCurrent(generation)) return;
       if (!ex) return;
       setLastExport(ex);
       // 3) token
@@ -954,21 +987,26 @@ const doSlice = useCallback(async () => {
         jwt = input.trim();
         setStoredJwt(jwt);
       }
+      if (!sliceGenerationRef.current.isCurrent(generation)) return;
       // 4) poslat do tiskárny
-      const fileId = await sendPrintToPrinter(ex.bytes, ex.name, jwt, (msg) =>
-        showToast("ok", msg, 6000)
-      );
-      showToast(
-        "ok",
-        `Soubor poslán do tiskárny ✓ (file ${fileId}) · tiskárna stahuje · tisk potvrď na displeji tiskárny`,
-        15000
-      );
+      const fileId = await sendPrintToPrinter(ex.bytes, ex.name, jwt, (msg) => {
+        if (sliceGenerationRef.current.isCurrent(generation)) showToast("ok", msg, 6000);
+      });
+      if (sliceGenerationRef.current.isCurrent(generation)) {
+        showToast(
+          "ok",
+          `Soubor poslán do tiskárny ✓ (file ${fileId}) · tiskárna stahuje · tisk potvrď na displeji tiskárny`,
+          15000
+        );
+      }
     } catch (e) {
-      showToast("err", e instanceof Error ? e.message : "Odeslání do tiskárny selhalo.", 10000);
+      if (sliceGenerationRef.current.isCurrent(generation)) {
+        showToast("err", e instanceof Error ? e.message : "Odeslání do tiskárny selhalo.", 10000);
+      }
     } finally {
-      setSending(false);
+      if (sliceGenerationRef.current.isCurrent(generation)) setSending(false);
     }
-  }, [models, sliceResult, settings, printer, buildExport]);
+  }, [models, sliceResult, sliceDiagnostics, settings, printer, buildExport, invalidateSlice]);
 
   const centerSel = useCallback(() => {
     if (!selectedId) return;
@@ -1023,11 +1061,9 @@ const doSlice = useCallback(async () => {
       modelsRef.current = next;
       return next;
     });
-    setSliceResult(null);
-    setSupportPreview(null);
-    setLastExport(null);
+    invalidateSlice();
     showToast("ok", "Modely rozmístěny ✓");
-  }, []);
+  }, [invalidateSlice]);
 
   const screenshot3d = useCallback(() => {
     const canvas = document.querySelector("canvas");
@@ -1110,16 +1146,14 @@ const doSlice = useCallback(async () => {
       else if (e.key === "ArrowUp") nudgeSel(0, 5);
       else if (e.key === "ArrowDown") nudgeSel(0, -5);
       else if (e.key === "Escape" && sliceResult) {
-        setSliceResult(null);
-        setSupportPreview(null);
-        setLastExport(null);
+        invalidateSlice();
       } else if (e.key === "Delete" && selectedId !== null) {
         removeModel(selectedId);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [orientSel, doSlice, exportPm7, duplicateSel, centerSel, resetSel, printNow, mirrorSel, nudgeSel, sliceResult, removeModel]);
+  }, [orientSel, doSlice, exportPm7, duplicateSel, centerSel, resetSel, printNow, mirrorSel, nudgeSel, sliceResult, removeModel, invalidateSlice]);
 
   return (
     <div className="page">
@@ -1443,10 +1477,7 @@ const doSlice = useCallback(async () => {
               <span>Tiskárna</span>
               <select
                 value={printerId}
-                onChange={(e) => {
-                  setPrinterId(e.target.value);
-                  setSliceResult(null);
-                }}
+                onChange={(e) => selectPrinter(e.target.value)}
               >
                 {PRINTERS.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -1778,6 +1809,14 @@ const doSlice = useCallback(async () => {
                   <span>Čas (odhad)</span>
                   <b>{fmtTime(estPrintTime)}</b>
                 </div>
+                <div className="info-row">
+                  <span>Islands</span>
+                  <b className={sliceDiagnostics?.islandCount ? "fit-bad" : ""}>
+                    {sliceDiagnostics?.islandCount
+                      ? `⚠ ${sliceDiagnostics.islandCount}${sliceDiagnostics.truncated ? "+" : ""}`
+                      : "✓ žádné"}
+                  </b>
+                </div>
               </>
             )}
             <div className="info-row">
@@ -1818,11 +1857,7 @@ const doSlice = useCallback(async () => {
               <span>Náhled tisku</span>
               <button
                 className="slice-close"
-                onClick={() => {
-                  setSliceResult(null);
-                  setSupportPreview(null);
-                  setLastExport(null);
-                }}
+                onClick={invalidateSlice}
                 title="Zavřít náhled"
               >
                 ×
@@ -1839,6 +1874,20 @@ const doSlice = useCallback(async () => {
               Vrstva {sliceIdx + 1} / {sliceResult.layers.length} · z ={" "}
               {sliceResult.layers[sliceIdx].z.toFixed(2)} mm · {sliceResult.layerHeight} mm/vrstva
             </div>
+            {sliceDiagnostics?.islandCount ? (
+              <button
+                type="button"
+                className="btn btn-small btn-ghost"
+                style={{ marginTop: 8, width: "100%" }}
+                onClick={() => {
+                  const next = sliceDiagnostics.islands.find((item) => item.layer > sliceIdx)
+                    ?? sliceDiagnostics.islands[0];
+                  if (next) setSliceIdx(next.layer);
+                }}
+              >
+                ⚠ Přejít na další island ({sliceDiagnostics.islandCount})
+              </button>
+            ) : null}
           </div>
         )}
 

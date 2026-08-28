@@ -2,12 +2,11 @@ import type { PipelineModel } from "./pipeline";
 import type { PipelineSettings } from "./pipeline";
 import type { PrinterProfile } from "./profiles";
 import type { SliceResult } from "./slice";
+import type { DrainAnchor } from "./hollow";
 import {
   initNative,
   nativeReady,
   fullDepthRegion,
-  fillBetween16Z,
-  wasmDilate,
 } from "./native";
 import { detectSupportAnchors } from "./supportDetect";
 import {
@@ -54,6 +53,229 @@ interface DepthInfo {
   kScale: number;
 }
 
+interface RasterLayer {
+  data: Uint8Array;
+  count: number;
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+export interface FullResRaftRuns {
+  /** Offset into `spans` for every row; spans are inclusive x0/x1 pairs. */
+  rowOffsets: Uint32Array;
+  spans: Uint16Array;
+}
+
+/**
+ * Exact box-dilated first-layer footprint encoded as row spans.
+ *
+ * Only (2r+1) horizontally-dilated rows are retained. This avoids both the
+ * native 5*n scratch layout and a Uint32 index for every raft pixel; a smooth
+ * dense raft is represented by one x0/x1 pair per row.
+ */
+export function buildFullResRaftRuns(
+  front: Uint16Array,
+  back: Uint16Array,
+  zq: number,
+  width: number,
+  height: number,
+  radiusX: number,
+  radiusY: number,
+): FullResRaftRuns {
+  const n = width * height;
+  if (front.length < n || back.length < n) throw new Error("Full-res raft depth map is too small.");
+  if (width > 65536) throw new Error("Full-res raft row spans require width <= 65536.");
+  const rx = Math.max(0, Math.trunc(radiusX));
+  const ry = Math.max(0, Math.trunc(radiusY));
+  const ringRows = Math.min(height, ry * 2 + 1);
+  const horizontalRing = new Uint8Array(ringRows * width);
+  const verticalCounts = new Uint32Array(width);
+  const rowOffsets = new Uint32Array(height + 1);
+  let spans = new Uint16Array(Math.max(16, height * 4));
+  let spanLength = 0;
+
+  const appendSpan = (x0: number, x1: number) => {
+    if (spanLength + 2 > spans.length) {
+      const grown = new Uint16Array(spans.length * 2);
+      grown.set(spans);
+      spans = grown;
+    }
+    spans[spanLength++] = x0;
+    spans[spanLength++] = x1;
+  };
+
+  // Continue for ry virtual rows so bottom-edge output rows see their clipped
+  // vertical window, just like the reference box dilation.
+  for (let sourceY = 0; sourceY < height + ry; sourceY++) {
+    const leavingY = sourceY - (ry * 2 + 1);
+    if (leavingY >= 0 && leavingY < height) {
+      const leavingRow = (leavingY % ringRows) * width;
+      for (let x = 0; x < width; x++) verticalCounts[x] -= horizontalRing[leavingRow + x];
+    }
+
+    if (sourceY < height) {
+      const ringRow = (sourceY % ringRows) * width;
+      horizontalRing.fill(0, ringRow, ringRow + width);
+      const sourceRow = sourceY * width;
+      let filled = 0;
+      for (let x = 0; x <= Math.min(width - 1, rx); x++) {
+        const p = sourceRow + x;
+        if (front[p] < zq && zq < back[p]) filled++;
+      }
+      for (let x = 0; x < width; x++) {
+        const value = filled > 0 ? 1 : 0;
+        horizontalRing[ringRow + x] = value;
+        verticalCounts[x] += value;
+        const removeX = x - rx;
+        const addX = x + rx + 1;
+        if (removeX >= 0) {
+          const p = sourceRow + removeX;
+          if (front[p] < zq && zq < back[p]) filled--;
+        }
+        if (addX < width) {
+          const p = sourceRow + addX;
+          if (front[p] < zq && zq < back[p]) filled++;
+        }
+      }
+    }
+
+    const outputY = sourceY - ry;
+    if (outputY < 0 || outputY >= height) continue;
+    rowOffsets[outputY] = spanLength;
+    let x = 0;
+    while (x < width) {
+      while (x < width && verticalCounts[x] === 0) x++;
+      if (x >= width) break;
+      const x0 = x++;
+      while (x < width && verticalCounts[x] !== 0) x++;
+      appendSpan(x0, x - 1);
+    }
+    rowOffsets[outputY + 1] = spanLength;
+  }
+
+  return { rowOffsets, spans: spans.slice(0, spanLength) };
+}
+
+/**
+ * Přesná 2D box eroze sloučená s aktualizací Z běhů. Horizontální výsledky
+ * drží jen (2r+1) řádků; vertikální součty mají jeden prvek na sloupec.
+ * Na rozdíl od dvou plných scratch bitmap tak vrstvu projde JS jen jednou.
+ */
+function advanceErodedRuns(
+  src: Uint8Array,
+  width: number,
+  height: number,
+  radiusX: number,
+  radiusY: number,
+  horizontalRows: Uint8Array,
+  verticalCounts: Uint16Array,
+  zRun: Uint8Array | Uint16Array
+) {
+  const spanX = radiusX * 2 + 1;
+  const spanY = radiusY * 2 + 1;
+  horizontalRows.fill(0);
+  verticalCounts.fill(0);
+  if (spanX > width || spanY > height) {
+    zRun.fill(0);
+    return;
+  }
+  for (let y = 0; y < height; y++) {
+    const srcRow = y * width;
+    const ringRow = (y % spanY) * width;
+    let filled = 0;
+    for (let x = 0; x < spanX; x++) filled += src[srcRow + x] ? 1 : 0;
+    for (let x = radiusX; x < width - radiusX; x++) {
+      const old = horizontalRows[ringRow + x];
+      const horizontal = filled === spanX ? 1 : 0;
+      horizontalRows[ringRow + x] = horizontal;
+      verticalCounts[x] += horizontal - old;
+      if (y >= spanY - 1) {
+        const p = (y - radiusY) * width + x;
+        zRun[p] = verticalCounts[x] === spanY
+          ? Math.min(zRun.BYTES_PER_ELEMENT === 1 ? 255 : 65535, zRun[p] + 1)
+          : 0;
+      }
+      const leaving = x - radiusX;
+      const entering = x + radiusX + 1;
+      if (entering < width) {
+        filled -= src[srcRow + leaving] ? 1 : 0;
+        filled += src[srcRow + entering] ? 1 : 0;
+      }
+    }
+  }
+}
+
+/**
+ * Streamovatelný přesný 3D hollowing pro full-res vrstvy.
+ *
+ * Původní export odvozoval dutinu pouze z nejnižšího a nejvyššího průsečíku
+ * paprsku (`front/back`). To zalévalo okna a kabiny a vytvářelo falešné stěny.
+ * Tato varianta bere skutečný even-odd řez každé vrstvy a aplikuje stejnou 3D
+ * box erozi jako náhled. Z-okno není uložené jako 81 plných 12K bitmap: průběžná
+ * délka běhu určí průnik v Z. Solidní střed znovu vytvoří druhý sekvenční sweep;
+ * to je levnější než držet stovky MiB packed vrstev a nemění even-odd význam.
+ */
+export function createStreamingHollowRasterizer(
+  rasterizeSolid: (layerIndex: number) => RasterLayer,
+  width: number,
+  height: number,
+  layerCount: number,
+  wallRadiusX: number,
+  wallRadiusY: number,
+  wallLayers: number,
+  materializeSolid: (
+    layerIndex: number,
+    coreRuns?: Uint8Array | Uint16Array,
+    coreThreshold?: number
+  ) => RasterLayer
+): (layerIndex: number) => RasterLayer {
+  const n = width * height;
+  const radiusX = Math.max(1, Math.trunc(wallRadiusX));
+  const radiusY = Math.max(1, Math.trunc(wallRadiusY));
+  const radiusZ = Math.max(1, Math.trunc(wallLayers));
+  const fullWindow = radiusZ * 2 + 1;
+  const yWindow = radiusY * 2 + 1;
+  const horizontalRows = new Uint8Array(Math.min(height, yWindow) * width);
+  const verticalCounts = new Uint16Array(width);
+  const zRun: Uint8Array | Uint16Array = fullWindow <= 255
+    ? new Uint8Array(n)
+    : new Uint16Array(n);
+  let processed = -1;
+  let requested = -1;
+
+  const materialize = (index: number, removeCore: boolean): RasterLayer => {
+    return removeCore
+      ? materializeSolid(index, zRun, fullWindow)
+      : materializeSolid(index);
+  };
+
+  const processThrough = (last: number) => {
+    while (processed < last) {
+      processed++;
+      const solid = rasterizeSolid(processed);
+      advanceErodedRuns(
+        solid.data, width, height, radiusX, radiusY,
+        horizontalRows, verticalCounts, zRun
+      );
+    }
+  };
+
+  return (layerIndex: number) => {
+    if (layerIndex < 0 || layerIndex >= layerCount) {
+      throw new Error(`Full-res hollow vrstva ${layerIndex} je mimo rozsah.`);
+    }
+    if (layerIndex !== requested + 1) {
+      throw new Error("Full-res hollow vrstvy musí být čteny postupně.");
+    }
+    requested = layerIndex;
+    processThrough(Math.min(layerCount - 1, layerIndex + radiusZ));
+    const complete = layerIndex >= radiusZ && layerIndex + radiusZ < layerCount;
+    return materialize(layerIndex, complete);
+  };
+}
+
 /**
  * Přesný vektorový průřez pro full-res export. Depth mapa umí jen jeden Z
  * interval na paprsek a u Benchy by zalila kabinu/dutiny. Sweep drží aktivní
@@ -93,9 +315,17 @@ function createExactRasterizer(
       oy: (printer.printY - (m.bounds.max[1] - m.bounds.min[1])) / 2 - m.bounds.min[1] + m.ty,
     };
   });
+  // Jeden buffer na sweep. Volající výsledek spotřebuje před dalším krokem;
+  // 12K ArrayBuffer proto nemusí pro každou vrstvu znovu alokovat a čekat na GC.
+  const data = new Uint8Array(W * H);
 
-  return (layerIndex: number, z: number) => {
-    const data = new Uint8Array(W * H);
+  return (
+    layerIndex: number,
+    z: number,
+    coreRuns?: Uint8Array | Uint16Array,
+    coreThreshold = 0
+  ) => {
+    data.fill(0);
     let count = 0;
     let minX = W, minY = H, maxX = -1, maxY = -1;
     for (const state of states) {
@@ -144,15 +374,15 @@ function createExactRasterizer(
           const row = y * W;
           for (let x = x0; x <= x1; x++) {
             const p = row + x;
-            if (!data[p]) {
+            if (!data[p] && (!coreRuns || coreRuns[p] < coreThreshold)) {
               data[p] = 255;
               count++;
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
             }
           }
-          if (x0 < minX) minX = x0;
-          if (x1 > maxX) maxX = x1;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
         }
       }
     }
@@ -164,7 +394,8 @@ function createExactRasterizer(
 function rasterizeDepthFull(
   models: PipelineModel[],
   printer: PrinterProfile,
-  layerHeight: number
+  layerHeight: number,
+  heapBacked = false
 ): DepthInfo & { front: Uint16Array<ArrayBuffer>; back: Uint16Array<ArrayBuffer> } {
   const resX = printer.resX;
   const resY = printer.resY;
@@ -180,7 +411,12 @@ function rasterizeDepthFull(
   // kvantizace: 0..65535 přes výšku modelu (3,5 µm při 230 mm)
   const kScale = 65535 / zRange;
 
-  const { front, back } = fullDepthRegion(n);
+  // Hollow export používá exact even-odd řezy a fill_between16 nepotřebuje.
+  // Jeho depth mapy proto nesmí aktivovat historický 19*n WASM layout
+  // (scratch + float-depth + full-depth), který na 12K sám přesahuje 1 GiB.
+  const { front, back } = heapBacked
+    ? { front: new Uint16Array(n), back: new Uint16Array(n) }
+    : fullDepthRegion(n);
   front.fill(65535);
   back.fill(0);
 
@@ -248,6 +484,7 @@ export async function buildPm7FullRes(
     makePreview?: (slice: SliceResult, layerIdx: number, w: number, h: number) => Promise<Uint8Array>;
     onProgress?: (done: number, total: number) => void;
     previews?: [Uint8Array, Uint8Array] | null;
+    drainAnchors?: DrainAnchor[];
   } = {}
 ): Promise<FullResResult> {
   await initNative();
@@ -272,7 +509,7 @@ export async function buildPm7FullRes(
   const kScale = 65535 / zRange;
 
   // 1) rasterizace depth map (do wasm regionu)
-  const depth = rasterizeDepthFull(models, printer, settings.layerHeight);
+  const depth = rasterizeDepthFull(models, printer, settings.layerHeight, settings.hollow);
 
   // sanity check: aspoň nějaké platné pixely (jinak render selhal)
   let valid = 0;
@@ -368,16 +605,19 @@ export async function buildPm7FullRes(
 
   const pxMm = printer.printX / resX;
   const pyMm = printer.printY / resY;
-  const hollowWallQ = settings.hollow ? settings.wallMm * kScale : 0;
-  const solidBase = settings.hollow ? Math.max(1, Math.floor(numLayers * 0.02)) : 0;
 
-  // odvodňovací otvory (full-res replikace carveEdgeHole z hollow.ts)
-  const holeR =
-    settings.hollow && settings.drainHoles
-      ? Math.max(1, Math.round(settings.holeDiaMm / 2 / pxMm))
-      : 0;
-  const holeBottom = holeR > 0 ? Math.max(0, Math.floor(numLayers * 0.05)) : -1;
-  const holeTop = holeR > 0 ? Math.max(0, Math.floor(numLayers * 0.85)) : -1;
+  // Plán otvorů vzniká nad stejným low-res hollow výsledkem, který uživatel
+  // zkontroloval. Souřadnice se pouze převedou do nativních pixelů tiskárny.
+  const holeRx = Math.max(1, Math.round(settings.holeDiaMm / 2 / pxMm));
+  const holeRy = Math.max(1, Math.round(settings.holeDiaMm / 2 / pyMm));
+  const drainPlan = settings.hollow && settings.drainHoles
+    ? (opts.drainAnchors ?? []).map((anchor) => ({
+        x: Math.min(resX - 1, Math.max(0, Math.round((anchor.x + 0.5) * scale - 0.5))),
+        y: Math.min(resY - 1, Math.max(0, Math.round((anchor.y + 0.5) * scale - 0.5))),
+        layer: Math.min(numLayers - 1, Math.max(0, anchor.layer)),
+        direction: anchor.direction,
+      }))
+    : [];
 
   // sloupy podle vrstev — [vrstva] → seznam (x,y,r) ve full-res px
   const pxPerMmFull = printer.printX / resX;
@@ -430,22 +670,14 @@ export async function buildPm7FullRes(
 
   // Raft přímo v nativním rozlišení. Dřívější upscaling 1/16 masky dělal
   // viditelné 16×16 voxelové schody i v exportu.
-  let raftIndices: Uint32Array | null = null;
+  let raftRuns: FullResRaftRuns | null = null;
   if (settings.raft && settings.raftLayers > 0) {
-    const footprintFull = new Uint8Array(resX * resY);
     const zq0 = layerZQ[0];
-    for (let idx = 0; idx < footprintFull.length; idx++) {
-      if (depth.front[idx] < zq0 && zq0 < depth.back[idx]) footprintFull[idx] = 1;
-    }
-    const marginFull = Math.max(1, Math.round(settings.raftMarginMm / pxPerMmFull));
-    const smoothRaft = wasmDilate(footprintFull, resX, resY, marginFull);
-    let countRaft = 0;
-    for (let idx = 0; idx < smoothRaft.length; idx++) countRaft += smoothRaft[idx] ? 1 : 0;
-    raftIndices = new Uint32Array(countRaft);
-    let ri = 0;
-    for (let idx = 0; idx < smoothRaft.length; idx++) {
-      if (smoothRaft[idx]) raftIndices[ri++] = idx;
-    }
+    const marginFullX = Math.max(1, Math.round(settings.raftMarginMm / pxMm));
+    const marginFullY = Math.max(1, Math.round(settings.raftMarginMm / pyMm));
+    raftRuns = buildFullResRaftRuns(
+      depth.front, depth.back, zq0, resX, resY, marginFullX, marginFullY,
+    );
   }
 
   const machine = printer;
@@ -465,17 +697,35 @@ export async function buildPm7FullRes(
         ] as [number, number, number],
       }
     : { min: [0, 0, 0] as [number, number, number], max: [0, 0, 0] as [number, number, number] };
-  const exactRaster = settings.hollow
-    ? null
-    : createExactRasterizer(models, printer, zMin, settings.layerHeight, numLayers);
+  const exactRaster = createExactRasterizer(models, printer, zMin, settings.layerHeight, numLayers);
+  const hollowOutputRaster = settings.hollow
+    ? createExactRasterizer(models, printer, zMin, settings.layerHeight, numLayers)
+    : null;
+  const hollowRaster = settings.hollow
+    ? createStreamingHollowRasterizer(
+        (layerIndex) => {
+          const zr = Math.min(zRange - topEpsilon, (layerIndex + 0.5) * settings.layerHeight);
+          return exactRaster(layerIndex, zMin + zr);
+        },
+        resX,
+        resY,
+        numLayers,
+        Math.max(1, Math.round(settings.wallMm / pxMm)),
+        Math.max(1, Math.round(settings.wallMm / pyMm)),
+        Math.max(1, Math.ceil(settings.wallMm / settings.layerHeight)),
+        (layerIndex, coreRuns, coreThreshold) => {
+          const zr = Math.min(zRange - topEpsilon, (layerIndex + 0.5) * settings.layerHeight);
+          return hollowOutputRaster!(layerIndex, zMin + zr, coreRuns, coreThreshold);
+        }
+      )
+    : null;
 
   for (let i = 0; i < numLayers; i++) {
     const zRel = Math.min(zRange - topEpsilon, (i + 0.5) * settings.layerHeight);
     const zq = zRel * kScale;
-    const wallq = i < solidBase ? 0 : hollowWallQ;
-    const res = exactRaster
-      ? exactRaster(i, zMin + zRel)
-      : fillBetween16Z(zq, wallq, resX, resY);
+    const res = hollowRaster
+      ? hollowRaster(i)
+      : exactRaster(i, zMin + zRel);
 
     let count = res.count;
     let minX = res.minX;
@@ -542,52 +792,45 @@ export async function buildPm7FullRes(
     }
 
     // raft (prvních N vrstev)
-    if (raftIndices && i < Math.min(settings.raftLayers, numLayers)) {
-      for (let k = 0; k < raftIndices.length; k++) {
-        const idx = raftIndices[k];
-        if (!res.data[idx] && !(depth.front[idx] < zq && zq < depth.back[idx])) {
-          res.data[idx] = 255;
-          count++;
-          const xx = idx % resX;
-          const yy = Math.floor(idx / resX);
-          if (xx < minX) minX = xx;
-          if (xx > maxX) maxX = xx;
-          if (yy < minY) minY = yy;
-          if (yy > maxY) maxY = yy;
+    if (raftRuns && i < Math.min(settings.raftLayers, numLayers)) {
+      for (let yy = 0; yy < resY; yy++) {
+        const row = yy * resX;
+        for (let k = raftRuns.rowOffsets[yy]; k < raftRuns.rowOffsets[yy + 1]; k += 2) {
+          const x0 = raftRuns.spans[k];
+          const x1 = raftRuns.spans[k + 1];
+          for (let xx = x0; xx <= x1; xx++) {
+            const idx = row + xx;
+            if (!res.data[idx] && !(depth.front[idx] < zq && zq < depth.back[idx])) {
+              res.data[idx] = 255;
+              count++;
+              if (xx < minX) minX = xx;
+              if (xx > maxX) maxX = xx;
+              if (yy < minY) minY = yy;
+              if (yy > maxY) maxY = yy;
+            }
+          }
         }
       }
     }
 
-    // odvodňovací otvory — najdi pravý okraj a vyřízni kruh
-    if (i === holeBottom || i === holeTop) {
-      if (count > 0 || maxX >= 0) {
-        let mx = -1;
-        let my = -1;
-        for (let yy = 0; yy < resY; yy++) {
-          for (let xx = resX - 1; xx >= 0; xx--) {
-            if (res.data[yy * resX + xx]) {
-              if (xx > mx) {
-                mx = xx;
-                my = yy;
-              }
-              break;
-            }
+    // Skutečné souvislé Z válce pro každou dutinu. Směr je explicitní,
+    // takže více párů otvorů ani změna pořadí kotev nerozbije export.
+    for (const anchor of drainPlan) {
+      const active = anchor.direction === "bottom" ? i <= anchor.layer : i >= anchor.layer;
+      if (!active) continue;
+      const x0 = Math.max(0, anchor.x - holeRx);
+      const x1 = Math.min(resX - 1, anchor.x + holeRx);
+      const y0 = Math.max(0, anchor.y - holeRy);
+      const y1 = Math.min(resY - 1, anchor.y + holeRy);
+      for (let yy = y0; yy <= y1; yy++) {
+        for (let xx = x0; xx <= x1; xx++) {
+          const dx = (xx - anchor.x) / holeRx;
+          const dy = (yy - anchor.y) / holeRy;
+          const index = yy * resX + xx;
+          if (dx * dx + dy * dy <= 1 && res.data[index]) {
+            res.data[index] = 0;
+            count--;
           }
-        }
-        if (mx >= 0) {
-          const r2 = holeR * holeR;
-          const x0 = Math.max(0, mx - holeR);
-          const x1 = Math.min(resX - 1, mx + holeR);
-          const y0 = Math.max(0, my - holeR);
-          const y1 = Math.min(resY - 1, my + holeR);
-          for (let yy = y0; yy <= y1; yy++) {
-            for (let xx = x0; xx <= x1; xx++) {
-              const ddx = xx - mx;
-              const ddy = yy - my;
-              if (ddx * ddx + ddy * ddy <= r2) res.data[yy * resX + xx] = 0;
-            }
-          }
-          count = Math.max(0, count - Math.round(Math.PI * holeR * holeR * 0.5));
         }
       }
     }

@@ -1,5 +1,4 @@
 import type { SliceResult } from "./slice";
-import { nativeReady, wasmDilate } from "./native";
 
 export interface RaftOptions {
   enabled: boolean;
@@ -13,6 +12,44 @@ export interface RaftResult {
   result: SliceResult;
   /** maska raftu — 1 = pixel raftu (per vrstva) */
   mask: Uint8Array[];
+}
+
+/** Exact separable box dilation with independent physical X/Y radii. */
+function dilateFootprint(
+  src: Uint8Array,
+  width: number,
+  height: number,
+  radiusX: number,
+  radiusY: number,
+): Uint8Array {
+  const horizontal = new Uint8Array(width * height);
+  const out = new Uint8Array(width * height);
+
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    let filled = 0;
+    for (let x = 0; x <= Math.min(width - 1, radiusX); x++) filled += src[row + x] ? 1 : 0;
+    for (let x = 0; x < width; x++) {
+      if (filled > 0) horizontal[row + x] = 1;
+      const leaving = x - radiusX;
+      const entering = x + radiusX + 1;
+      if (leaving >= 0) filled -= src[row + leaving] ? 1 : 0;
+      if (entering < width) filled += src[row + entering] ? 1 : 0;
+    }
+  }
+
+  for (let x = 0; x < width; x++) {
+    let filled = 0;
+    for (let y = 0; y <= Math.min(height - 1, radiusY); y++) filled += horizontal[y * width + x];
+    for (let y = 0; y < height; y++) {
+      if (filled > 0) out[y * width + x] = 1;
+      const leaving = y - radiusY;
+      const entering = y + radiusY + 1;
+      if (leaving >= 0) filled -= horizontal[leaving * width + x];
+      if (entering < height) filled += horizontal[entering * width + x];
+    }
+  }
+  return out;
 }
 
 /**
@@ -30,8 +67,8 @@ export function applyRaft(
   }
   const W = slice.resolutionX;
   const H = slice.resolutionY;
-  const px = Math.min(mmPerPx.x, mmPerPx.y);
-  const marginPx = Math.max(1, Math.round(opts.marginMm / px));
+  const marginPxX = Math.max(1, Math.round(opts.marginMm / mmPerPx.x));
+  const marginPxY = Math.max(1, Math.round(opts.marginMm / mmPerPx.y));
 
   // otisk = sjednocení spodních vrstev (do max 2 mm, nebo 8 % výšky).
   // U nakloněných modelů se deska dotýká jen částí — první vrstva by dala
@@ -50,25 +87,7 @@ export function applyRaft(
     }
   }
 
-  // rozšířit (box dilate o marginPx) — WASM SIMD, jinak JS
-  const raft = nativeReady()
-    ? wasmDilate(footprint, W, H, marginPx)
-    : (() => {
-        const r = new Uint8Array(W * H);
-        for (let y = 0; y < H; y++) {
-          for (let x = 0; x < W; x++) {
-            if (!footprint[y * W + x]) continue;
-            const x0 = Math.max(0, x - marginPx);
-            const x1 = Math.min(W - 1, x + marginPx);
-            const y0 = Math.max(0, y - marginPx);
-            const y1 = Math.min(H - 1, y + marginPx);
-            for (let yy = y0; yy <= y1; yy++) {
-              r.fill(1, yy * W + x0, yy * W + x1 + 1);
-            }
-          }
-        }
-        return r;
-      })();
+  const raft = dilateFootprint(footprint, W, H, marginPxX, marginPxY);
 
   const layers = slice.layers.map((l) => new Uint8Array(l.data));
   const raftCount = Math.min(opts.layers, layers.length);

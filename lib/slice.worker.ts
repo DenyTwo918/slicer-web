@@ -1,8 +1,15 @@
-import { runSlicePipeline, type PipelineModel, type PipelinePrinter, type PipelineSettings } from "./pipeline";
+import {
+  runSlicePipeline,
+  type PipelineModel,
+  type PipelinePrinter,
+  type PipelineSettings,
+  type SliceDiagnostics,
+} from "./pipeline";
 import type { SliceResult } from "./slice";
 import { buildPm7FullRes } from "./fullRes";
 import type { PrinterProfile } from "./profiles";
 import type { SupportPreviewData } from "./supports";
+import type { DrainAnchor } from "./hollow";
 
 export interface SliceWorkerRequest {
   id: number;
@@ -24,6 +31,8 @@ export interface SliceWorkerRequest {
   };
   /** náhledy vygenerované na hlavním vlákně (canvas) */
   previews?: [Uint8Array, Uint8Array] | null;
+  /** Low-res plán otvorů z náhledu; full-res export jej škáluje 1:1. */
+  drainAnchors?: DrainAnchor[];
 }
 
 export interface SliceWorkerResponse {
@@ -34,6 +43,7 @@ export interface SliceWorkerResponse {
   result?: SliceResult | null;
   supportPreview?: SupportPreviewData | null;
   engine?: "gpu" | "cpu";
+  diagnostics?: SliceDiagnostics;
   bytes?: Uint8Array;
   done?: number;
   total?: number;
@@ -50,7 +60,7 @@ ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
 
   // full-res streaming export
   if (kind === "exportFull") {
-    const { models, settings, printer, exposures, previews } = ev.data;
+    const { models, settings, printer, exposures, previews, drainAnchors } = ev.data;
     try {
       const res = await buildPm7FullRes(
         models,
@@ -61,6 +71,7 @@ ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
           ...(exposures ?? {}),
           previewSlice: null,
           previews: previews ?? null,
+          drainAnchors: drainAnchors ?? [],
           onProgress: (done, total) => {
             ctx.postMessage({ id, ok: true, kind: "exportFull-progress", done, total });
           },
@@ -80,7 +91,7 @@ ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
 
   const { models, settings, printer, forceCpu } = ev.data;
   try {
-    const { result, supportPreview, engine } = await runSlicePipeline(
+    const { result, supportPreview, engine, diagnostics } = await runSlicePipeline(
       models,
       settings,
       printer,
@@ -97,6 +108,7 @@ ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
       result,
       supportPreview,
       engine,
+      diagnostics,
     };
     ctx.postMessage(resp, transfer);
   } catch (err) {

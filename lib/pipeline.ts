@@ -1,12 +1,13 @@
 import type { StlBounds } from "./stl";
 import { sliceMesh, unionSlices, type SliceResult } from "./slice";
 import { generateSupports, type SupportPreviewData } from "./supports";
-import { applyHollow } from "./hollow";
+import { applyHollow, carveDrainHolesInPlace, type DrainAnchor } from "./hollow";
 import { applyRaft } from "./raft";
 import { applyAA } from "./aa";
 import { initNative } from "./native";
 import { gpuSlice } from "./gpuSlice";
 import { detectSupportAnchors } from "./supportDetect";
+import { detectIslands, type IslandFinding } from "./islands";
 
 /** Model pro pipeline — jen data, která slicing potřebuje (posílá se do workera). */
 export interface PipelineModel {
@@ -54,6 +55,17 @@ export interface PipelineResult {
   supportPreview: SupportPreviewData | null;
   /** Který slicing engine běžel */
   engine: "gpu" | "cpu";
+  diagnostics: SliceDiagnostics;
+}
+
+export interface SliceDiagnostics {
+  /** Celkový počet zcela nových komponent bez opory v předchozí vrstvě. */
+  islandCount: number;
+  /** Omezený seznam pro navigaci v UI; celkový počet zůstává v islandCount. */
+  islands: IslandFinding[];
+  truncated: boolean;
+  /** Kotvy automatických odvodňovacích otvorů v low-res rastru. */
+  drainAnchors: DrainAnchor[];
 }
 
 /** Měřítko pro slicovací rastr — vždy dělí rozlišení tiskárny beze zbytku.
@@ -79,7 +91,13 @@ export async function runSlicePipeline(
 ): Promise<PipelineResult> {
   await initNative();
   if (models.length === 0) {
-    return { result: null, supportMask: null, supportPreview: null, engine: "cpu" };
+    return {
+      result: null,
+      supportMask: null,
+      supportPreview: null,
+      engine: "cpu",
+      diagnostics: { islandCount: 0, islands: [], truncated: false, drainAnchors: [] },
+    };
   }
   const scale = sliceScale(printer.resX, printer.resY);
   const sliceW = printer.resX / scale;
@@ -92,6 +110,7 @@ export async function runSlicePipeline(
   // GPU slicing (WebGPU depth-based; hollow už aplikované) — jinak CPU fallback
   let result: SliceResult | null = null;
   let collisionResult: SliceResult | null = null;
+  let drainAnchors: DrainAnchor[] = [];
   let engine: "gpu" | "cpu" = "cpu";
   // Přesný vektorový CPU sweep je po Z-indexaci rychlý i na Benchy a na rozdíl
   // od depth mapy zachová více dutin/intervalů v jednom XY paprsku. GPU depth
@@ -138,7 +157,7 @@ export async function runSlicePipeline(
     // u hollow modelu sloupy legálně vedly prázdnou dutinou uvnitř skořepiny.
     collisionResult = result;
     if (result && settings.hollow) {
-      result = applyHollow(
+      const hollowed = applyHollow(
         result,
         {
           enabled: true,
@@ -146,8 +165,10 @@ export async function runSlicePipeline(
           holeDiaMm: settings.holeDiaMm,
           drainHoles: settings.drainHoles,
         },
-        mmPerPx
+        mmPerPx,
+        (anchors) => { drainAnchors = anchors; },
       );
+      result = hollowed;
     }
   }
   let supportMask: Uint8Array[] | null = null;
@@ -215,8 +236,22 @@ export async function runSlicePipeline(
       }
     }
   }
+  // Supporty ani raft nesmí znovu uzavřít cestu dutina → exteriér.
+  if (result && drainAnchors.length > 0) {
+    carveDrainHolesInPlace(result, drainAnchors, settings.holeDiaMm, mmPerPx);
+  }
+  // Diagnostika musí vycházet z finální binární tiskové topologie.
+  // AA ji následně jen převede na grayscale a mikroskopické ostrovy může rozmazat pod threshold.
+  const allIslands = result ? detectIslands(result) : [];
   if (result && settings.aa) {
     result = applyAA(result);
   }
-  return { result, supportMask, supportPreview, engine };
+  const maxReportedIslands = 250;
+  const diagnostics: SliceDiagnostics = {
+    islandCount: allIslands.length,
+    islands: allIslands.slice(0, maxReportedIslands),
+    truncated: allIslands.length > maxReportedIslands,
+    drainAnchors,
+  };
+  return { result, supportMask, supportPreview, engine, diagnostics };
 }
