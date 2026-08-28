@@ -1,4 +1,5 @@
 import { unzipSync } from "fflate";
+import type { SliceResult } from "./slice";
 
 export interface ExactLayerCrop {
   data: Uint8Array;
@@ -15,6 +16,18 @@ export interface Pm7PreviewArchive {
   layerCount: number;
   resX: number;
   resY: number;
+}
+
+export interface NativeLayerPreview {
+  z: number;
+  data: Uint8Array;
+  resX: number;
+  resY: number;
+  offsetX: number;
+  offsetY: number;
+  fullResX: number;
+  fullResY: number;
+  layerHeight: number;
 }
 
 type Run = { start: number; end: number; color: number };
@@ -120,4 +133,46 @@ export function openPm7PreviewArchive(
   });
   const layers = indexed.map((entry) => entry.data);
   return { layers, layerCount: layers.length, resX, resY };
+}
+
+/**
+ * While native PW0 generation is still running, return an empty surface with
+ * the correct Z so the real STL clipping plane remains interactive. Once the
+ * archive exists, replace it atomically with the exact exported layer crop.
+ */
+export function buildNativeLayerPreview(
+  slice: SliceResult | null,
+  archive: Pm7PreviewArchive | null,
+  layerIndex: number
+): NativeLayerPreview | null {
+  if (!slice) return null;
+  const layer = slice.layers[layerIndex];
+  if (!layer) return null;
+  if (!archive) {
+    return {
+      z: layer.z,
+      data: new Uint8Array(0),
+      resX: 0,
+      resY: 0,
+      offsetX: 0,
+      offsetY: 0,
+      fullResX: 0,
+      fullResY: 0,
+      layerHeight: slice.layerHeight,
+    };
+  }
+  const encoded = archive.layers[layerIndex];
+  if (!encoded) throw new Error(`Missing native preview layer ${layerIndex}`);
+  const crop = decodePw0Crop(encoded, archive.resX, archive.resY);
+  return {
+    z: layer.z,
+    data: crop.data,
+    resX: crop.width,
+    resY: crop.height,
+    offsetX: crop.offsetX,
+    offsetY: crop.offsetY,
+    fullResX: crop.fullWidth,
+    fullResY: crop.fullHeight,
+    layerHeight: slice.layerHeight,
+  };
 }

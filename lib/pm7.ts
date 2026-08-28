@@ -108,6 +108,50 @@ export function encodeLayerToMachineInternal(
 }
 
 /**
+ * Encode an otherwise-zero native layer by scanning only its lit bounding box.
+ * Leading/trailing plate pixels are emitted as zero runs, so the decoded PW0
+ * remains byte-for-pixel identical without visiting an entire 14K LCD per layer.
+ */
+export function encodeLayerCropToMachineInternal(
+  data: Uint8Array,
+  resX: number,
+  resY: number,
+  _machine: PrinterProfile,
+  bounds: { minX: number; minY: number; maxX: number; maxY: number; count: number }
+): Uint8Array {
+  const w = rleWriter();
+  if (bounds.count <= 0 || bounds.maxX < bounds.minX || bounds.maxY < bounds.minY) {
+    w.push(0, resX * resY);
+    return w.finish();
+  }
+  const minX = Math.max(0, Math.min(resX - 1, bounds.minX));
+  const maxX = Math.max(minX, Math.min(resX - 1, bounds.maxX));
+  const minY = Math.max(0, Math.min(resY - 1, bounds.minY));
+  const maxY = Math.max(minY, Math.min(resY - 1, bounds.maxY));
+
+  w.push(0, minY * resX);
+  for (let y = minY; y <= maxY; y++) {
+    w.push(0, minX);
+    const row = y * resX;
+    let color = rleColor(data[row + minX]);
+    let length = 1;
+    for (let x = minX + 1; x <= maxX; x++) {
+      const next = rleColor(data[row + x]);
+      if (next === color) length++;
+      else {
+        w.push(color, length);
+        color = next;
+        length = 1;
+      }
+    }
+    w.push(color, length);
+    w.push(0, resX - maxX - 1);
+  }
+  w.push(0, (resY - maxY - 1) * resX);
+  return w.finish();
+}
+
+/**
  * Up-scale vrstvy na plné rozlišení tiskárny a zakóduje RLE4 PŘÍMO (streaming).
  * Předpokládá, že rozlišení slice dělí rozlišení stroje beze zbytku (scale = 8/4/2/1).
  */

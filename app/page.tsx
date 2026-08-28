@@ -31,7 +31,7 @@ import type { PrinterProfile } from "@/lib/profiles";
 import { createSliceGeneration } from "@/lib/sliceGeneration";
 import { buildPm7 } from "@/lib/pm7";
 import {
-  decodePw0Crop,
+  buildNativeLayerPreview,
   openPm7PreviewArchive,
   type Pm7PreviewArchive,
 } from "@/lib/exactLayerPreview";
@@ -838,6 +838,7 @@ const doSlice = useCallback(async () => {
       const printTimeS = Math.round(
         bottomTime + Math.max(0, result.layers.length - settings.bottomLayers) * perLayer
       );
+      setExportProgress("připravuji geometrii…");
       const bytes = await exportFullInWorker(models, settings, printer, {
         bottomExposure: settings.bottomExposure,
         normalExposure: settings.normalExposure,
@@ -1158,25 +1159,10 @@ const doSlice = useCallback(async () => {
     [models, printer]
   );
   const allFit = viewModels.every((m) => m.fits);
+  const sliceReady = !!sliceResult && !!exactPreview && !!lastExport;
 
   const layerPreview = useMemo(
-    () => {
-      if (!sliceResult || !exactPreview) return null;
-      const encoded = exactPreview.layers[sliceIdx];
-      if (!encoded) return null;
-      const crop = decodePw0Crop(encoded, exactPreview.resX, exactPreview.resY);
-      return {
-        z: sliceResult.layers[sliceIdx].z,
-        data: crop.data,
-        resX: crop.width,
-        resY: crop.height,
-        offsetX: crop.offsetX,
-        offsetY: crop.offsetY,
-        fullResX: crop.fullWidth,
-        fullResY: crop.fullHeight,
-        layerHeight: sliceResult.layerHeight,
-      };
-    },
+    () => buildNativeLayerPreview(sliceResult, exactPreview, sliceIdx),
     [sliceResult, exactPreview, sliceIdx]
   );
 
@@ -1506,21 +1492,21 @@ const doSlice = useCallback(async () => {
           <div className="fab-wrap" style={{ bottom: sliceResult ? 400 : 18 }}>
             <button
               className="btn btn-fab"
-              onClick={sliceResult ? printNow : doSlice}
-              disabled={sending || exporting || (slicing && !sliceResult)}
+              onClick={sliceReady ? printNow : doSlice}
+              disabled={sending || exporting || slicing}
             >
               {sending
                 ? "Posílám…"
-                : slicing && !sliceResult
-                ? "Slicuji…"
-                : sliceResult
+                : slicing
+                ? "Připravuji vrstvy…"
+                : sliceReady
                 ? "Tisknout"
                 : "Slicovat"}
             </button>
             <button
               className="btn btn-small btn-ghost fab-usb"
               onClick={exportPm7}
-              disabled={exporting}
+              disabled={exporting || slicing || !sliceReady}
               title={`Uložit soubor na USB (stažení .pm7 v nativním ${printer.resX}×${printer.resY})`}
             >
               {exporting ? "…" : "USB"}

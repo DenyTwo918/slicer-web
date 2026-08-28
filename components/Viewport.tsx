@@ -20,6 +20,7 @@ import {
   traceMaskContours,
   type PreviewPoint2 as Point2,
 } from "@/lib/previewContour";
+import { bitmapPointToPlate } from "@/lib/previewCoordinates";
 
 interface ViewModel {
   id: number;
@@ -207,10 +208,14 @@ function raftShapes(
   const shapes: THREE.Shape[] = [];
   const writePath = (path: THREE.Path, loop: Point2[]) => {
     loop.forEach((p, i) => {
-      const wx = (p.x + (mapping?.offsetX ?? 0)) * sx - printer.printX / 2;
-      const wy = printer.printY / 2 - (p.y + (mapping?.offsetY ?? 0)) * sy;
-      if (i === 0) path.moveTo(wx, wy);
-      else path.lineTo(wx, wy);
+      const world = bitmapPointToPlate(p, {
+        offsetX: mapping?.offsetX ?? 0,
+        offsetY: mapping?.offsetY ?? 0,
+        fullWidth: mapping?.fullWidth ?? width,
+        fullHeight: mapping?.fullHeight ?? height,
+      }, printer);
+      if (i === 0) path.moveTo(world.x, world.y);
+      else path.lineTo(world.x, world.y);
     });
     path.closePath();
   };

@@ -18,7 +18,7 @@ import {
   type BraceLine,
 } from "./supports";
 import {
-  encodeLayerToMachineInternal,
+  encodeLayerCropToMachineInternal,
   encodeSceneSlice,
   buildPwsp,
   buildLayersControllerFrom,
@@ -845,11 +845,12 @@ export async function buildPm7FullRes(
       y1: count === 0 ? 0 : (maxY + 1) * pyMm,
     });
 
-    files[`layer_images/layer_${i}.pw0Img`] = encodeLayerToMachineInternal(
+    files[`layer_images/layer_${i}.pw0Img`] = encodeLayerCropToMachineInternal(
       res.data,
       resX,
       resY,
-      machine
+      machine,
+      { minX, minY, maxX, maxY, count }
     );
 
     if (opts.onProgress && (i % 50 === 0 || i === numLayers - 1)) {
