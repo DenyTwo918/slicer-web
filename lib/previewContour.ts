@@ -3,6 +3,76 @@ export interface PreviewPoint2 {
   y: number;
 }
 
+const pointKey = (point: PreviewPoint2) => `${point.x},${point.y}`;
+const directedEdgeKey = (a: PreviewPoint2, b: PreviewPoint2) => `${pointKey(a)}>${pointKey(b)}`;
+
+/**
+ * Vytvoří přesné hranové smyčky binární masky. Při diagonálním dotyku má uzel
+ * více pokračování; pravidlo „materiál vpravo“ udrží komponenty oddělené a
+ * zabrání samoprotínajícím bow-tie polygonům, které Earcut vyplňoval obřími
+ * trojúhelníky přes prázdný prostor.
+ */
+export function traceMaskContours(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  threshold = 0,
+): PreviewPoint2[][] {
+  const outgoing = new Map<string, PreviewPoint2[]>();
+  const edges: { a: PreviewPoint2; b: PreviewPoint2 }[] = [];
+  const on = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < width && y < height && mask[y * width + x] > threshold;
+  const add = (a: PreviewPoint2, b: PreviewPoint2) => {
+    edges.push({ a, b });
+    const list = outgoing.get(pointKey(a));
+    if (list) list.push(b);
+    else outgoing.set(pointKey(a), [b]);
+  };
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!on(x, y)) continue;
+      if (!on(x, y - 1)) add({ x, y }, { x: x + 1, y });
+      if (!on(x + 1, y)) add({ x: x + 1, y }, { x: x + 1, y: y + 1 });
+      if (!on(x, y + 1)) add({ x: x + 1, y: y + 1 }, { x, y: y + 1 });
+      if (!on(x - 1, y)) add({ x, y: y + 1 }, { x, y });
+    }
+  }
+
+  const used = new Set<string>();
+  const loops: PreviewPoint2[][] = [];
+  for (const edge of edges) {
+    if (used.has(directedEdgeKey(edge.a, edge.b))) continue;
+    const loop: PreviewPoint2[] = [edge.a];
+    let previous = edge.a;
+    let current = edge.b;
+    for (let guard = 0; guard <= edges.length; guard++) {
+      used.add(directedEdgeKey(previous, current));
+      if (pointKey(current) === pointKey(loop[0])) break;
+      loop.push(current);
+      const candidates = (outgoing.get(pointKey(current)) ?? [])
+        .filter((candidate) => !used.has(directedEdgeKey(current, candidate)));
+      if (candidates.length === 0) break;
+      const inX = current.x - previous.x;
+      const inY = current.y - previous.y;
+      const next = candidates.reduce((best, candidate) => {
+        const score = (point: PreviewPoint2) => {
+          const outX = point.x - current.x;
+          const outY = point.y - current.y;
+          const cross = inX * outY - inY * outX;
+          const dot = inX * outX + inY * outY;
+          if (dot < 0) return -100; // nikdy se nevracet po stejné hraně
+          return cross * 10 + dot; // doprava, rovně, doleva
+        };
+        return score(candidate) > score(best) ? candidate : best;
+      });
+      previous = current;
+      current = next;
+    }
+    if (loop.length >= 3 && pointKey(current) === pointKey(loop[0])) loops.push(loop);
+  }
+  return loops;
+}
+
 function rdp(points: PreviewPoint2[], tolerance: number): PreviewPoint2[] {
   if (points.length <= 2) return points;
   const a = points[0];

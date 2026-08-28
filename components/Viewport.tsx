@@ -17,6 +17,7 @@ import type { PrinterProfile } from "@/lib/profiles";
 import type { SupportPreviewData } from "@/lib/supports";
 import {
   simplifyClosedPreviewContour,
+  traceMaskContours,
   type PreviewPoint2 as Point2,
 } from "@/lib/previewContour";
 
@@ -158,47 +159,7 @@ function raftShapes(
   threshold = 0,
   smooth: boolean | "faithful" = true
 ): THREE.Shape[] {
-  const outgoing = new Map<string, Point2[]>();
-  const edges: { a: Point2; b: Point2 }[] = [];
-  const key = (p: Point2) => `${p.x},${p.y}`;
-  const on = (x: number, y: number) =>
-    x >= 0 && y >= 0 && x < width && y < height && mask[y * width + x] > threshold;
-  const add = (a: Point2, b: Point2) => {
-    edges.push({ a, b });
-    const list = outgoing.get(key(a));
-    if (list) list.push(b);
-    else outgoing.set(key(a), [b]);
-  };
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      if (!on(x, y)) continue;
-      if (!on(x, y - 1)) add({ x, y }, { x: x + 1, y });
-      if (!on(x + 1, y)) add({ x: x + 1, y }, { x: x + 1, y: y + 1 });
-      if (!on(x, y + 1)) add({ x: x + 1, y: y + 1 }, { x, y: y + 1 });
-      if (!on(x - 1, y)) add({ x, y: y + 1 }, { x, y });
-    }
-  }
-
-  const used = new Set<string>();
-  const edgeKey = (a: Point2, b: Point2) => `${key(a)}>${key(b)}`;
-  const loops: Point2[][] = [];
-  for (const edge of edges) {
-    if (used.has(edgeKey(edge.a, edge.b))) continue;
-    const loop: Point2[] = [edge.a];
-    let current = edge.a;
-    let next = edge.b;
-    for (let guard = 0; guard <= edges.length; guard++) {
-      used.add(edgeKey(current, next));
-      current = next;
-      if (key(current) === key(loop[0])) break;
-      loop.push(current);
-      const candidates = outgoing.get(key(current)) ?? [];
-      const candidate = candidates.find((p) => !used.has(edgeKey(current, p)));
-      if (!candidate) break;
-      next = candidate;
-    }
-    if (loop.length >= 3 && key(current) === key(loop[0])) loops.push(loop);
-  }
+  const loops = traceMaskContours(mask, width, height, threshold);
 
   const sx = printer.printX / width;
   const sy = printer.printY / height;
