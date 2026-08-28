@@ -11,7 +11,11 @@ import {
   openPm7PreviewArchive,
 } from "../lib/exactLayerPreview";
 import { getPrinter } from "../lib/profiles";
-import { bitmapPointToPlate, meshCenterOffset } from "../lib/previewCoordinates";
+import {
+  bitmapPointToPlate,
+  meshCenterOffset,
+  viewportMeshPlacement,
+} from "../lib/previewCoordinates";
 import { decodePw0Layer } from "../lib/anycubicLayer";
 
 const m7 = getPrinter("m7");
@@ -91,7 +95,15 @@ assert.deepEqual(mapped, { x: -25, y: 25 }, "bitmap Y must not be mirrored in th
 assert.deepEqual(
   meshCenterOffset({ min: [10, 20, 0], max: [30, 60, 18] }),
   { x: -20, y: -40 },
-  "viewport must center the same non-origin mesh bounds as the slicer"
+  "geometry must center the same non-origin mesh bounds as the slicer"
+);
+assert.deepEqual(
+  viewportMeshPlacement(
+    { min: [10, 20, 0], max: [30, 60, 18] },
+    { x: 7, y: -3 }
+  ),
+  { geometryX: -20, geometryY: -40, groupX: 7, groupY: -3 },
+  "bounds centering must be applied exactly once, inside geometry rather than the transform group"
 );
 
 const empty = decodePw0Crop(archive.layers[0], width, height);

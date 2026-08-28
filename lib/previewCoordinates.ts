@@ -27,3 +27,17 @@ export function meshCenterOffset(bounds: {
     y: -(bounds.min[1] + bounds.max[1]) / 2,
   };
 }
+
+/** One canonical placement: center raw STL inside geometry, then apply only user translation to group. */
+export function viewportMeshPlacement(
+  bounds: { min: readonly [number, number, number]; max: readonly [number, number, number] },
+  transform: { x: number; y: number }
+): { geometryX: number; geometryY: number; groupX: number; groupY: number } {
+  const geometry = meshCenterOffset(bounds);
+  return {
+    geometryX: geometry.x,
+    geometryY: geometry.y,
+    groupX: transform.x,
+    groupY: transform.y,
+  };
+}

@@ -20,7 +20,7 @@ import {
   traceMaskContours,
   type PreviewPoint2 as Point2,
 } from "@/lib/previewContour";
-import { bitmapPointToPlate, meshCenterOffset } from "@/lib/previewCoordinates";
+import { bitmapPointToPlate, viewportMeshPlacement } from "@/lib/previewCoordinates";
 
 interface ViewModel {
   id: number;
@@ -435,22 +435,21 @@ function Model({
   mesh,
   color,
   clipPlane,
+  geometryOffset,
 }: {
   mesh: StlMesh;
   color: string;
   clipPlane?: THREE.Plane | null;
+  geometryOffset: { x: number; y: number };
 }) {
   const geometry = useMemo(() => {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
     g.setAttribute("normal", new THREE.BufferAttribute(mesh.normals, 3));
-    const { min, max } = mesh.bounds;
-    const cx = (min[0] + max[0]) / 2;
-    const cy = (min[1] + max[1]) / 2;
-    g.translate(-cx, -cy, -min[2]); // vycentrovat a postavit na z=0
+    g.translate(geometryOffset.x, geometryOffset.y, -mesh.bounds.min[2]);
     g.computeBoundingSphere();
     return g;
-  }, [mesh]);
+  }, [mesh, geometryOffset.x, geometryOffset.y]);
 
   // POZOR: THREE drží poloprostor normal·p + constant >= 0.
   // Náhled vrstvy musí skutečně skrýt vše NAD řezem (z <= layerZ).
@@ -645,16 +644,21 @@ export default function Viewport({
         else if (!m.fits) color = "#ef4444";
         const isSel = m.id === selectedId;
         const h = m.mesh.bounds.max[2] - m.mesh.bounds.min[2];
-        const center = meshCenterOffset(m.mesh.bounds);
+        const placement = viewportMeshPlacement(m.mesh.bounds, m.transform);
         return (
           <group
             key={m.id}
             ref={isSel ? gizmoRef : undefined}
-            position={[m.transform.x, m.transform.y, h / 2]}
+            position={[placement.groupX, placement.groupY, h / 2]}
           >
             {/* pivot = střed modelu (rotace/škálování kolem něj) */}
-            <group position={[center.x, center.y, -h / 2]}>
-              <Model mesh={m.mesh} color={color} clipPlane={clipPlane} />
+            <group position={[0, 0, -h / 2]}>
+              <Model
+                mesh={m.mesh}
+                color={color}
+                clipPlane={clipPlane}
+                geometryOffset={{ x: placement.geometryX, y: placement.geometryY }}
+              />
             </group>
           </group>
         );
