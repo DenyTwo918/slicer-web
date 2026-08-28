@@ -18,6 +18,8 @@
 - Mesh repair: not applied (Lychee reported one topology error)
 - Layers: 480
 - PM7 SHA-256: `F405E8A5BA2A748F4C9759971A1A569648D59D68DB2E4140A26C535552920C4A`
+- Validation: ZIP CRC and all 480 PW0 layers pass; successfully opened and
+  scrubbed in Anycubic Photon Workshop 4.1.8 (M7, 0.100 mm, 2.500 s detected).
 
 The file is an Anycubic ZIP container. Although its manifest declares `pwszImg`,
 Lychee stores the actual layer payloads as `layer_N.pw0Img` RLE4 images at
