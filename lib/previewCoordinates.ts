@@ -16,3 +16,14 @@ export function bitmapPointToPlate(
     y: (point.y + mapping.offsetY) * (printer.printY / mapping.fullHeight) - printer.printY / 2,
   };
 }
+
+/** Offset raw STL coordinates so its XY bounds center sits at the scene origin. */
+export function meshCenterOffset(bounds: {
+  min: readonly [number, number, number];
+  max: readonly [number, number, number];
+}): { x: number; y: number } {
+  return {
+    x: -(bounds.min[0] + bounds.max[0]) / 2,
+    y: -(bounds.min[1] + bounds.max[1]) / 2,
+  };
+}

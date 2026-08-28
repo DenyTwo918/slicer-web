@@ -11,7 +11,7 @@ import {
   openPm7PreviewArchive,
 } from "../lib/exactLayerPreview";
 import { getPrinter } from "../lib/profiles";
-import { bitmapPointToPlate } from "../lib/previewCoordinates";
+import { bitmapPointToPlate, meshCenterOffset } from "../lib/previewCoordinates";
 import { decodePw0Layer } from "../lib/anycubicLayer";
 
 const m7 = getPrinter("m7");
@@ -87,6 +87,12 @@ const mapped = bitmapPointToPlate(
   { printX: 100, printY: 100 }
 );
 assert.deepEqual(mapped, { x: -25, y: 25 }, "bitmap Y must not be mirrored in the 3D scene");
+
+assert.deepEqual(
+  meshCenterOffset({ min: [10, 20, 0], max: [30, 60, 18] }),
+  { x: -20, y: -40 },
+  "viewport must center the same non-origin mesh bounds as the slicer"
+);
 
 const empty = decodePw0Crop(archive.layers[0], width, height);
 assert.equal(empty.width, 0);

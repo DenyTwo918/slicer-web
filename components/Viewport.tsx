@@ -20,7 +20,7 @@ import {
   traceMaskContours,
   type PreviewPoint2 as Point2,
 } from "@/lib/previewContour";
-import { bitmapPointToPlate } from "@/lib/previewCoordinates";
+import { bitmapPointToPlate, meshCenterOffset } from "@/lib/previewCoordinates";
 
 interface ViewModel {
   id: number;
@@ -645,6 +645,7 @@ export default function Viewport({
         else if (!m.fits) color = "#ef4444";
         const isSel = m.id === selectedId;
         const h = m.mesh.bounds.max[2] - m.mesh.bounds.min[2];
+        const center = meshCenterOffset(m.mesh.bounds);
         return (
           <group
             key={m.id}
@@ -652,7 +653,7 @@ export default function Viewport({
             position={[m.transform.x, m.transform.y, h / 2]}
           >
             {/* pivot = střed modelu (rotace/škálování kolem něj) */}
-            <group position={[0, 0, -h / 2]}>
+            <group position={[center.x, center.y, -h / 2]}>
               <Model mesh={m.mesh} color={color} clipPlane={clipPlane} />
             </group>
           </group>
