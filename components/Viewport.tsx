@@ -20,7 +20,11 @@ import {
   traceMaskContours,
   type PreviewPoint2 as Point2,
 } from "@/lib/previewContour";
-import { bitmapPointToPlate, viewportMeshPlacement } from "@/lib/previewCoordinates";
+import {
+  bitmapPointToPlate,
+  viewportMeshPlacement,
+} from "@/lib/previewCoordinates";
+import { buildViewportModelGeometry } from "@/lib/viewportGeometry";
 
 interface ViewModel {
   id: number;
@@ -462,14 +466,10 @@ function Model({
   clipPlane?: THREE.Plane | null;
   geometryOffset: { x: number; y: number };
 }) {
-  const geometry = useMemo(() => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
-    g.setAttribute("normal", new THREE.BufferAttribute(mesh.normals, 3));
-    g.translate(geometryOffset.x, geometryOffset.y, -mesh.bounds.min[2]);
-    g.computeBoundingSphere();
-    return g;
-  }, [mesh, geometryOffset.x, geometryOffset.y]);
+  const geometry = useMemo(
+    () => buildViewportModelGeometry(mesh, geometryOffset),
+    [mesh, geometryOffset.x, geometryOffset.y]
+  );
 
   // POZOR: THREE drží poloprostor normal·p + constant >= 0.
   // Náhled vrstvy musí skutečně skrýt vše NAD řezem (z <= layerZ).
