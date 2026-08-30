@@ -72,6 +72,8 @@ const tray = buildFullResRaftPlan(trayFront, trayBack, 50, trayW, trayH, {
   rimWidthX: 2,
   rimWidthY: 2,
   rimLayers: 3,
+  rimShiftPerLayerX: 1,
+  rimShiftPerLayerY: 1,
 });
 const runContains = (runs: ReturnType<typeof buildFullResRaftRuns>, x: number, y: number) => {
   for (let k = runs.rowOffsets[y]; k < runs.rowOffsets[y + 1]; k += 2) {
@@ -80,12 +82,47 @@ const runContains = (runs: ReturnType<typeof buildFullResRaftRuns>, x: number, y
   return false;
 };
 assert.equal(runContains(tray.floorRuns[0], 14, 10), true, "full-res bottom includes spatula ledge");
-assert.equal(runContains(tray.floorRuns[2], 14, 10), false, "full-res floor tapers toward the rim");
-assert.ok(tray.rimOuter && tray.rimInner, "full-res tray has outer and inner perimeter runs");
-assert.equal(runContains(tray.rimOuter!, 13, 10), true, "full-res raised perimeter has its outer edge");
-assert.equal(runContains(tray.rimInner!, 13, 10), false, "full-res raised perimeter excludes its cavity");
-assert.equal(runContains(tray.rimInner!, 11, 10), true, "full-res tray cavity stays open above the floor");
-assert.equal(tray.rimLayers, 3, "full-res rim keeps the requested height");
+assert.equal(runContains(tray.floorRuns[2], 14, 10), true, "full-res floor supports the complete rim base");
+assert.equal(tray.rimOuterRuns.length, 3, "full-res rim keeps the requested height");
+assert.equal(tray.rimInnerRuns.length, 3, "every outer rim layer has a matching cavity");
+assert.equal(runContains(tray.rimOuterRuns[0], 14, 10), true, "native rim starts at its supported base");
+assert.equal(runContains(tray.rimInnerRuns[0], 13, 10), false, "base layer contains the wall outside its cavity");
+assert.equal(runContains(tray.rimInnerRuns[1], 13, 10), true, "inner face moves 1 px out after one layer");
+assert.equal(runContains(tray.rimOuterRuns[1], 15, 10), true, "outer face moves 1 px out after one layer");
+assert.equal(
+  runContains(tray.rimOuterRuns[1], 15, 15),
+  false,
+  "native convex corner uses a physical circular offset instead of a box offset",
+);
+assert.equal(runContains(tray.rimInnerRuns[2], 14, 10), true, "inner face moves 2 px out after two layers");
+assert.equal(runContains(tray.rimOuterRuns[2], 16, 10), true, "outer face moves 2 px out after two layers");
+
+const coarseRim = buildFullResRaftPlan(trayFront, trayBack, 50, trayW, trayH, {
+  floorLayers: 1,
+  marginX: 2,
+  marginY: 2,
+  rimEnabled: true,
+  rimWidthX: 1,
+  rimWidthY: 1,
+  rimLayers: 6,
+  rimShiftPerLayerX: 0.2,
+  rimShiftPerLayerY: 0.2,
+});
+const rimContains = (plan: typeof coarseRim, layer: number, x: number, y: number) =>
+  runContains(plan.rimOuterRuns[layer], x, y) && !runContains(plan.rimInnerRuns[layer], x, y);
+assert.equal(
+  coarseRim.rimOuterRuns[0],
+  coarseRim.rimOuterRuns[1],
+  "native plan reuses layers with the same discrete elliptical offset kernel",
+);
+let coarseAxisOverlap = 0;
+for (let x = 0; x < trayW; x++) {
+  if (rimContains(coarseRim, 4, x, 10) && rimContains(coarseRim, 5, x, 10)) coarseAxisOverlap++;
+}
+assert.ok(
+  coarseAxisOverlap > 0,
+  "native pixel-quantized 45-degree wall must retain straight-edge overlap at coarse pitch",
+);
 
 const bandFront = new Uint16Array(trayW * trayH);
 const bandBack = new Uint16Array(trayW * trayH);
@@ -100,6 +137,8 @@ const bandPlan = buildFullResRaftPlan(bandFront, bandBack, 50, trayW, trayH, {
   rimWidthX: 0,
   rimWidthY: 0,
   rimLayers: 0,
+  rimShiftPerLayerX: 0,
+  rimShiftPerLayerY: 0,
   footprintZQMax: 80,
   extraFootprintRows: new Map([[10, new Uint16Array([17, 17])]]),
 });

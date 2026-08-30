@@ -77,6 +77,9 @@ export interface FullResRaftPlanOptions {
   rimWidthX: number;
   rimWidthY: number;
   rimLayers: number;
+  /** Horizontal pixel shift per printed layer; 1:1 physical rise = 45°. */
+  rimShiftPerLayerX: number;
+  rimShiftPerLayerY: number;
   /** Highest sampled lower-band Z value included in the raft footprint. */
   footprintZQMax?: number;
   /** Native row spans contributed by support feet/braces in the same band. */
@@ -85,8 +88,8 @@ export interface FullResRaftPlanOptions {
 
 export interface FullResRaftPlan {
   floorRuns: FullResRaftRuns[];
-  rimOuter: FullResRaftRuns | null;
-  rimInner: FullResRaftRuns | null;
+  rimOuterRuns: FullResRaftRuns[];
+  rimInnerRuns: FullResRaftRuns[];
   rimLayers: number;
 }
 
@@ -192,7 +195,88 @@ export function buildFullResRaftRuns(
   return { rowOffsets, spans: spans.slice(0, spanLength) };
 }
 
-/** Layer-dependent full-resolution raft: tapered floor plus raised perimeter. */
+/**
+ * Elliptically offsets an existing run mask in physical X/Y pixel radii.
+ * This keeps convex corners on the same 45° physical slope as straight edges;
+ * independently growing box radii would move corners by sqrt(2) × the rise.
+ */
+interface FullResOffsetKernel {
+  key: string;
+  rows: Array<{ dy: number; dx: number }>;
+}
+
+function buildFullResOffsetKernel(radiusX: number, radiusY: number): FullResOffsetKernel {
+  const rx = Math.max(0, radiusX);
+  const ry = Math.max(0, radiusY);
+  const rows: FullResOffsetKernel["rows"] = [];
+  const maxDy = Math.ceil(ry);
+  for (let dy = -maxDy; dy <= maxDy; dy++) {
+    const normalizedY = ry > 0 ? dy / ry : dy === 0 ? 0 : Infinity;
+    if (Math.abs(normalizedY) > 1) continue;
+    const dx = Math.floor(rx * Math.sqrt(Math.max(0, 1 - normalizedY * normalizedY)) + 1e-9);
+    rows.push({ dy, dx });
+  }
+  return {
+    key: rows.map(({ dy, dx }) => `${dy}:${dx}`).join(","),
+    rows,
+  };
+}
+
+function offsetFullResRaftRuns(
+  source: FullResRaftRuns,
+  width: number,
+  height: number,
+  kernel: FullResOffsetKernel,
+): FullResRaftRuns {
+  if (kernel.rows.length === 1 && kernel.rows[0].dy === 0 && kernel.rows[0].dx === 0) return source;
+  const rowOffsets = new Uint32Array(height + 1);
+  let spans = new Uint16Array(Math.max(16, source.spans.length));
+  let spanLength = 0;
+  const intervals: Array<[number, number]> = [];
+
+  const appendSpan = (x0: number, x1: number) => {
+    if (spanLength + 2 > spans.length) {
+      const grown = new Uint16Array(spans.length * 2);
+      grown.set(spans);
+      spans = grown;
+    }
+    spans[spanLength++] = x0;
+    spans[spanLength++] = x1;
+  };
+
+  for (let y = 0; y < height; y++) {
+    rowOffsets[y] = spanLength;
+    intervals.length = 0;
+    for (const { dy, dx } of kernel.rows) {
+      const sourceY = y - dy;
+      if (sourceY < 0 || sourceY >= height) continue;
+      for (let k = source.rowOffsets[sourceY]; k < source.rowOffsets[sourceY + 1]; k += 2) {
+        intervals.push([
+          Math.max(0, source.spans[k] - dx),
+          Math.min(width - 1, source.spans[k + 1] + dx),
+        ]);
+      }
+    }
+    intervals.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let start = -1;
+    let end = -1;
+    for (const interval of intervals) {
+      if (start < 0) {
+        [start, end] = interval;
+      } else if (interval[0] <= end + 1) {
+        end = Math.max(end, interval[1]);
+      } else {
+        appendSpan(start, end);
+        [start, end] = interval;
+      }
+    }
+    if (start >= 0) appendSpan(start, end);
+    rowOffsets[y + 1] = spanLength;
+  }
+  return { rowOffsets, spans: spans.slice(0, spanLength) };
+}
+
+/** Layer-dependent full-resolution raft: solid floor plus outward-sloped perimeter. */
 export function buildFullResRaftPlan(
   front: Uint16Array,
   back: Uint16Array,
@@ -205,12 +289,19 @@ export function buildFullResRaftPlan(
   const marginX = Math.max(0, Math.trunc(opts.marginX));
   const marginY = Math.max(0, Math.trunc(opts.marginY));
   const rimEnabled = opts.rimEnabled && opts.rimWidthX > 0 && opts.rimWidthY > 0 && opts.rimLayers > 0;
-  const rimWidthX = rimEnabled ? Math.max(1, Math.trunc(opts.rimWidthX)) : 0;
-  const rimWidthY = rimEnabled ? Math.max(1, Math.trunc(opts.rimWidthY)) : 0;
-  const topOuterX = marginX + Math.ceil(rimWidthX / 2);
-  const topOuterY = marginY + Math.ceil(rimWidthY / 2);
-  const bottomOuterX = marginX + rimWidthX;
-  const bottomOuterY = marginY + rimWidthY;
+  const rimShiftPerLayerX = Math.max(0, opts.rimShiftPerLayerX);
+  const rimShiftPerLayerY = Math.max(0, opts.rimShiftPerLayerY);
+  // Preserve raster overlap when a sub-pixel 45° slope crosses into the next
+  // pixel. One extra pixel beyond the maximum quantized step prevents gaps.
+  const rimWidthX = rimEnabled
+    ? Math.max(Math.ceil(rimShiftPerLayerX) + 1, Math.trunc(opts.rimWidthX))
+    : 0;
+  const rimWidthY = rimEnabled
+    ? Math.max(Math.ceil(rimShiftPerLayerY) + 1, Math.trunc(opts.rimWidthY))
+    : 0;
+  const rimLayers = rimEnabled ? Math.max(0, Math.trunc(opts.rimLayers)) : 0;
+  const rimBaseOuterX = marginX + rimWidthX;
+  const rimBaseOuterY = marginY + rimWidthY;
   const cache = new Map<string, FullResRaftRuns>();
   const runsFor = (rx: number, ry: number) => {
     const key = `${rx}:${ry}`;
@@ -220,21 +311,43 @@ export function buildFullResRaftPlan(
     cache.set(key, runs);
     return runs;
   };
-  const floorRuns = Array.from({ length: floorLayers }, (_, i) => {
-    const t = floorLayers <= 1 ? 0 : i / (floorLayers - 1);
-    const rx = rimEnabled
-      ? Math.round(bottomOuterX + (topOuterX - bottomOuterX) * t)
-      : marginX;
-    const ry = rimEnabled
-      ? Math.round(bottomOuterY + (topOuterY - bottomOuterY) * t)
-      : marginY;
-    return runsFor(rx, ry);
+  const floorRuns = Array.from(
+    { length: floorLayers },
+    () => runsFor(rimEnabled ? rimBaseOuterX : marginX, rimEnabled ? rimBaseOuterY : marginY),
+  );
+  const rimBaseOuter = rimEnabled ? runsFor(rimBaseOuterX, rimBaseOuterY) : null;
+  const rimBaseInner = rimEnabled ? runsFor(marginX, marginY) : null;
+  const outerOffsetCache = new Map<string, FullResRaftRuns>();
+  const innerOffsetCache = new Map<string, FullResRaftRuns>();
+  const rimOuterRuns = Array.from({ length: rimLayers }, (_, layer) => {
+    const kernel = buildFullResOffsetKernel(
+      layer * rimShiftPerLayerX,
+      layer * rimShiftPerLayerY,
+    );
+    let runs = outerOffsetCache.get(kernel.key);
+    if (!runs) {
+      runs = offsetFullResRaftRuns(rimBaseOuter!, width, height, kernel);
+      outerOffsetCache.set(kernel.key, runs);
+    }
+    return runs;
+  });
+  const rimInnerRuns = Array.from({ length: rimLayers }, (_, layer) => {
+    const kernel = buildFullResOffsetKernel(
+      layer * rimShiftPerLayerX,
+      layer * rimShiftPerLayerY,
+    );
+    let runs = innerOffsetCache.get(kernel.key);
+    if (!runs) {
+      runs = offsetFullResRaftRuns(rimBaseInner!, width, height, kernel);
+      innerOffsetCache.set(kernel.key, runs);
+    }
+    return runs;
   });
   return {
     floorRuns,
-    rimOuter: rimEnabled ? runsFor(topOuterX, topOuterY) : null,
-    rimInner: rimEnabled ? runsFor(marginX, marginY) : null,
-    rimLayers: rimEnabled ? Math.max(0, Math.trunc(opts.rimLayers)) : 0,
+    rimOuterRuns,
+    rimInnerRuns,
+    rimLayers,
   };
 }
 
@@ -800,6 +913,7 @@ export async function buildPm7FullRes(
       settings.raftRim,
       settings.raftRimWidthMm,
       settings.raftRimHeightMm,
+      settings.layerHeight * 2,
     );
     const floorLayers = Math.min(settings.raftLayers, numLayers);
     const bandLayers = rim.enabled
@@ -821,6 +935,8 @@ export async function buildPm7FullRes(
             Math.ceil(rim.heightMm / settings.layerHeight),
           )
         : 0,
+      rimShiftPerLayerX: rim.enabled ? settings.layerHeight / pxMm : 0,
+      rimShiftPerLayerY: rim.enabled ? settings.layerHeight / pyMm : 0,
       footprintZQMax: rim.enabled ? layerZQ[Math.max(0, bandLayers - 1)] : undefined,
       extraFootprintRows,
     });
@@ -937,15 +1053,16 @@ export async function buildPm7FullRes(
       }
     }
 
-    // Raft jako nízká vanička: plné zkosené dno a poté jen obvodový lem.
+    // Raft jako nízká vanička: plné dno a poté 45° obvodový lem směrem ven.
     const floorCount = raftPlan?.floorRuns.length ?? 0;
+    const rimLayer = i - floorCount;
     const raftOuter = raftPlan && i < floorCount
       ? raftPlan.floorRuns[i]
       : raftPlan && i < floorCount + raftPlan.rimLayers
-        ? raftPlan.rimOuter
+        ? raftPlan.rimOuterRuns[rimLayer]
         : null;
     const raftInner = raftPlan && i >= floorCount && i < floorCount + raftPlan.rimLayers
-      ? raftPlan.rimInner
+      ? raftPlan.rimInnerRuns[rimLayer]
       : null;
     if (raftOuter) {
       for (let yy = 0; yy < resY; yy++) {
