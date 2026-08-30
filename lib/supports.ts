@@ -51,6 +51,8 @@ export interface SupportPreviewData {
   /** Samostatný otisk raftu; doplní jej pipeline po applyRaft(). */
   raftMask?: Uint8Array | null;
   raftLayers?: number;
+  /** Skutečné masky jednotlivých vrstev raftu včetně zvýšeného lemu. */
+  raftLayerMasks?: Uint8Array[];
 }
 
 const DEFAULTS = {

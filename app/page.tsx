@@ -72,6 +72,9 @@ interface SliceSettings {
   raft: boolean;
   raftLayers: number;
   raftMarginMm: number;
+  raftRim: boolean;
+  raftRimWidthMm: number;
+  raftRimHeightMm: number;
   zupHeight: number;
   zupSpeed: number;
   zupHeightBottom: number;
@@ -97,6 +100,9 @@ const DEFAULT_SETTINGS: SliceSettings = {
   raft: false,
   raftLayers: 3,
   raftMarginMm: 3,
+  raftRim: true,
+  raftRimWidthMm: 2,
+  raftRimHeightMm: 0.6,
   zupHeight: 1.0,
   zupSpeed: 1.0,
   zupHeightBottom: 1.5,
@@ -660,6 +666,9 @@ function exportFullInWorker(
         raft: settings.raft,
         raftLayers: settings.raftLayers,
         raftMarginMm: settings.raftMarginMm,
+        raftRim: settings.raftRim,
+        raftRimWidthMm: settings.raftRimWidthMm,
+        raftRimHeightMm: settings.raftRimHeightMm,
         aa: false, // full-res: AA se nepoužívá (nativní pixely)
       } satisfies PipelineSettings,
       printer: {
@@ -713,6 +722,9 @@ function sliceInWorker(
       raft: settings.raft,
       raftLayers: settings.raftLayers,
       raftMarginMm: settings.raftMarginMm,
+      raftRim: settings.raftRim,
+      raftRimWidthMm: settings.raftRimWidthMm,
+      raftRimHeightMm: settings.raftRimHeightMm,
       aa: settings.aa,
     } satisfies PipelineSettings,
     printer: {
@@ -1469,6 +1481,40 @@ const doSlice = useCallback(async () => {
                     onChange={(e) => updateSettings((s) => ({ ...s, raftMarginMm: Number(e.target.value) }))}
                   />
                 </label>
+                <label className="set-row check">
+                  <input
+                    type="checkbox"
+                    checked={settings.raftRim}
+                    onChange={(e) => updateSettings((s) => ({ ...s, raftRim: e.target.checked }))}
+                  />
+                  <span>Rantlík pro špachtli</span>
+                </label>
+                {settings.raftRim && (
+                  <>
+                    <label className="set-row">
+                      <span>Šířka rantlíku (mm)</span>
+                      <input
+                        type="number"
+                        min={0.5}
+                        max={5}
+                        step={0.1}
+                        value={settings.raftRimWidthMm}
+                        onChange={(e) => updateSettings((s) => ({ ...s, raftRimWidthMm: Number(e.target.value) }))}
+                      />
+                    </label>
+                    <label className="set-row">
+                      <span>Výška rantlíku (mm)</span>
+                      <input
+                        type="number"
+                        min={0.1}
+                        max={2}
+                        step={0.1}
+                        value={settings.raftRimHeightMm}
+                        onChange={(e) => updateSettings((s) => ({ ...s, raftRimHeightMm: Number(e.target.value) }))}
+                      />
+                    </label>
+                  </>
+                )}
               </>
             )}
           </SideSec>
@@ -1760,6 +1806,40 @@ const doSlice = useCallback(async () => {
                     onChange={(e) => updateSettings((s) => ({ ...s, raftMarginMm: Number(e.target.value) }))}
                   />
                 </label>
+                <label className="set-row check">
+                  <input
+                    type="checkbox"
+                    checked={settings.raftRim}
+                    onChange={(e) => updateSettings((s) => ({ ...s, raftRim: e.target.checked }))}
+                  />
+                  <span>Rantlík pro špachtli</span>
+                </label>
+                {settings.raftRim && (
+                  <>
+                    <label className="set-row">
+                      <span>Šířka rantlíku (mm)</span>
+                      <input
+                        type="number"
+                        min={0.5}
+                        max={5}
+                        step={0.1}
+                        value={settings.raftRimWidthMm}
+                        onChange={(e) => updateSettings((s) => ({ ...s, raftRimWidthMm: Number(e.target.value) }))}
+                      />
+                    </label>
+                    <label className="set-row">
+                      <span>Výška rantlíku (mm)</span>
+                      <input
+                        type="number"
+                        min={0.1}
+                        max={2}
+                        step={0.1}
+                        value={settings.raftRimHeightMm}
+                        onChange={(e) => updateSettings((s) => ({ ...s, raftRimHeightMm: Number(e.target.value) }))}
+                      />
+                    </label>
+                  </>
+                )}
               </>
             )}
             </details>

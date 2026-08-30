@@ -26,6 +26,7 @@ import {
   type SceneLayerInfo,
   type Pm7Options,
 } from "./pm7";
+import { normalizeRaftRim, raftFootprintBandLayers } from "./raft";
 
 /**
  * Full-res (12K) streaming export.
@@ -68,6 +69,27 @@ export interface FullResRaftRuns {
   spans: Uint16Array;
 }
 
+export interface FullResRaftPlanOptions {
+  floorLayers: number;
+  marginX: number;
+  marginY: number;
+  rimEnabled: boolean;
+  rimWidthX: number;
+  rimWidthY: number;
+  rimLayers: number;
+  /** Highest sampled lower-band Z value included in the raft footprint. */
+  footprintZQMax?: number;
+  /** Native row spans contributed by support feet/braces in the same band. */
+  extraFootprintRows?: ReadonlyMap<number, Uint16Array>;
+}
+
+export interface FullResRaftPlan {
+  floorRuns: FullResRaftRuns[];
+  rimOuter: FullResRaftRuns | null;
+  rimInner: FullResRaftRuns | null;
+  rimLayers: number;
+}
+
 /**
  * Exact box-dilated first-layer footprint encoded as row spans.
  *
@@ -83,12 +105,15 @@ export function buildFullResRaftRuns(
   height: number,
   radiusX: number,
   radiusY: number,
+  source?: Pick<FullResRaftPlanOptions, "footprintZQMax" | "extraFootprintRows">,
 ): FullResRaftRuns {
   const n = width * height;
   if (front.length < n || back.length < n) throw new Error("Full-res raft depth map is too small.");
   if (width > 65536) throw new Error("Full-res raft row spans require width <= 65536.");
   const rx = Math.max(0, Math.trunc(radiusX));
   const ry = Math.max(0, Math.trunc(radiusY));
+  const footprintZQMax = source?.footprintZQMax ?? zq;
+  const extraRowMask = source?.extraFootprintRows ? new Uint8Array(width) : null;
   const ringRows = Math.min(height, ry * 2 + 1);
   const horizontalRing = new Uint8Array(ringRows * width);
   const verticalCounts = new Uint32Array(width);
@@ -119,10 +144,19 @@ export function buildFullResRaftRuns(
       const ringRow = (sourceY % ringRows) * width;
       horizontalRing.fill(0, ringRow, ringRow + width);
       const sourceRow = sourceY * width;
+      if (extraRowMask) {
+        extraRowMask.fill(0);
+        const spans = source?.extraFootprintRows?.get(sourceY);
+        if (spans) {
+          for (let k = 0; k < spans.length; k += 2) {
+            extraRowMask.fill(1, spans[k], spans[k + 1] + 1);
+          }
+        }
+      }
       let filled = 0;
       for (let x = 0; x <= Math.min(width - 1, rx); x++) {
         const p = sourceRow + x;
-        if (front[p] < zq && zq < back[p]) filled++;
+        if ((front[p] < footprintZQMax && zq < back[p]) || extraRowMask?.[x]) filled++;
       }
       for (let x = 0; x < width; x++) {
         const value = filled > 0 ? 1 : 0;
@@ -132,11 +166,11 @@ export function buildFullResRaftRuns(
         const addX = x + rx + 1;
         if (removeX >= 0) {
           const p = sourceRow + removeX;
-          if (front[p] < zq && zq < back[p]) filled--;
+          if ((front[p] < footprintZQMax && zq < back[p]) || extraRowMask?.[removeX]) filled--;
         }
         if (addX < width) {
           const p = sourceRow + addX;
-          if (front[p] < zq && zq < back[p]) filled++;
+          if ((front[p] < footprintZQMax && zq < back[p]) || extraRowMask?.[addX]) filled++;
         }
       }
     }
@@ -156,6 +190,93 @@ export function buildFullResRaftRuns(
   }
 
   return { rowOffsets, spans: spans.slice(0, spanLength) };
+}
+
+/** Layer-dependent full-resolution raft: tapered floor plus raised perimeter. */
+export function buildFullResRaftPlan(
+  front: Uint16Array,
+  back: Uint16Array,
+  zq: number,
+  width: number,
+  height: number,
+  opts: FullResRaftPlanOptions,
+): FullResRaftPlan {
+  const floorLayers = Math.max(0, Math.trunc(opts.floorLayers));
+  const marginX = Math.max(0, Math.trunc(opts.marginX));
+  const marginY = Math.max(0, Math.trunc(opts.marginY));
+  const rimEnabled = opts.rimEnabled && opts.rimWidthX > 0 && opts.rimWidthY > 0 && opts.rimLayers > 0;
+  const rimWidthX = rimEnabled ? Math.max(1, Math.trunc(opts.rimWidthX)) : 0;
+  const rimWidthY = rimEnabled ? Math.max(1, Math.trunc(opts.rimWidthY)) : 0;
+  const topOuterX = marginX + Math.ceil(rimWidthX / 2);
+  const topOuterY = marginY + Math.ceil(rimWidthY / 2);
+  const bottomOuterX = marginX + rimWidthX;
+  const bottomOuterY = marginY + rimWidthY;
+  const cache = new Map<string, FullResRaftRuns>();
+  const runsFor = (rx: number, ry: number) => {
+    const key = `${rx}:${ry}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+    const runs = buildFullResRaftRuns(front, back, zq, width, height, rx, ry, opts);
+    cache.set(key, runs);
+    return runs;
+  };
+  const floorRuns = Array.from({ length: floorLayers }, (_, i) => {
+    const t = floorLayers <= 1 ? 0 : i / (floorLayers - 1);
+    const rx = rimEnabled
+      ? Math.round(bottomOuterX + (topOuterX - bottomOuterX) * t)
+      : marginX;
+    const ry = rimEnabled
+      ? Math.round(bottomOuterY + (topOuterY - bottomOuterY) * t)
+      : marginY;
+    return runsFor(rx, ry);
+  });
+  return {
+    floorRuns,
+    rimOuter: rimEnabled ? runsFor(topOuterX, topOuterY) : null,
+    rimInner: rimEnabled ? runsFor(marginX, marginY) : null,
+    rimLayers: rimEnabled ? Math.max(0, Math.trunc(opts.rimLayers)) : 0,
+  };
+}
+
+function buildSupportFootprintRows(
+  width: number,
+  height: number,
+  bandLayers: number,
+  pillarsByLayer: ReadonlyMap<number, { x: number; y: number; r: number }[]>,
+  bracesByLayer: ReadonlyMap<number, { x: number; y: number; r: number }[]>,
+): Map<number, Uint16Array> {
+  const pending = new Map<number, Array<[number, number]>>();
+  const addCircle = ({ x, y, r }: { x: number; y: number; r: number }) => {
+    const cx = Math.round(x);
+    const cy = Math.round(y);
+    const radius = Math.max(0, Math.trunc(r));
+    for (let yy = Math.max(0, cy - radius); yy <= Math.min(height - 1, cy + radius); yy++) {
+      const dy = yy - cy;
+      const dx = Math.floor(Math.sqrt(Math.max(0, radius * radius - dy * dy)));
+      const row = pending.get(yy) ?? [];
+      row.push([Math.max(0, cx - dx), Math.min(width - 1, cx + dx)]);
+      pending.set(yy, row);
+    }
+  };
+  for (let layer = 0; layer < bandLayers; layer++) {
+    for (const circle of pillarsByLayer.get(layer) ?? []) addCircle(circle);
+    for (const circle of bracesByLayer.get(layer) ?? []) addCircle(circle);
+  }
+  const mergedRows = new Map<number, Uint16Array>();
+  for (const [y, intervals] of pending) {
+    intervals.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const merged: number[] = [];
+    for (const [x0, x1] of intervals) {
+      const last = merged.length - 2;
+      if (last >= 0 && x0 <= merged[last + 1] + 1) {
+        merged[last + 1] = Math.max(merged[last + 1], x1);
+      } else {
+        merged.push(x0, x1);
+      }
+    }
+    mergedRows.set(y, Uint16Array.from(merged));
+  }
+  return mergedRows;
 }
 
 /**
@@ -670,14 +791,39 @@ export async function buildPm7FullRes(
 
   // Raft přímo v nativním rozlišení. Dřívější upscaling 1/16 masky dělal
   // viditelné 16×16 voxelové schody i v exportu.
-  let raftRuns: FullResRaftRuns | null = null;
+  let raftPlan: FullResRaftPlan | null = null;
   if (settings.raft && settings.raftLayers > 0) {
     const zq0 = layerZQ[0];
     const marginFullX = Math.max(1, Math.round(settings.raftMarginMm / pxMm));
     const marginFullY = Math.max(1, Math.round(settings.raftMarginMm / pyMm));
-    raftRuns = buildFullResRaftRuns(
-      depth.front, depth.back, zq0, resX, resY, marginFullX, marginFullY,
+    const rim = normalizeRaftRim(
+      settings.raftRim,
+      settings.raftRimWidthMm,
+      settings.raftRimHeightMm,
     );
+    const floorLayers = Math.min(settings.raftLayers, numLayers);
+    const bandLayers = rim.enabled
+      ? raftFootprintBandLayers(numLayers, settings.layerHeight)
+      : 1;
+    const extraFootprintRows = rim.enabled && settings.supports
+      ? buildSupportFootprintRows(resX, resY, bandLayers, pillarsByLayer, bracesByLayer)
+      : undefined;
+    raftPlan = buildFullResRaftPlan(depth.front, depth.back, zq0, resX, resY, {
+      floorLayers,
+      marginX: marginFullX,
+      marginY: marginFullY,
+      rimEnabled: rim.enabled,
+      rimWidthX: rim.enabled ? Math.max(1, Math.round(rim.widthMm / pxMm)) : 0,
+      rimWidthY: rim.enabled ? Math.max(1, Math.round(rim.widthMm / pyMm)) : 0,
+      rimLayers: rim.enabled
+        ? Math.min(
+            Math.max(0, numLayers - floorLayers),
+            Math.ceil(rim.heightMm / settings.layerHeight),
+          )
+        : 0,
+      footprintZQMax: rim.enabled ? layerZQ[Math.max(0, bandLayers - 1)] : undefined,
+      extraFootprintRows,
+    });
   }
 
   const machine = printer;
@@ -791,14 +937,29 @@ export async function buildPm7FullRes(
       }
     }
 
-    // raft (prvních N vrstev)
-    if (raftRuns && i < Math.min(settings.raftLayers, numLayers)) {
+    // Raft jako nízká vanička: plné zkosené dno a poté jen obvodový lem.
+    const floorCount = raftPlan?.floorRuns.length ?? 0;
+    const raftOuter = raftPlan && i < floorCount
+      ? raftPlan.floorRuns[i]
+      : raftPlan && i < floorCount + raftPlan.rimLayers
+        ? raftPlan.rimOuter
+        : null;
+    const raftInner = raftPlan && i >= floorCount && i < floorCount + raftPlan.rimLayers
+      ? raftPlan.rimInner
+      : null;
+    if (raftOuter) {
       for (let yy = 0; yy < resY; yy++) {
         const row = yy * resX;
-        for (let k = raftRuns.rowOffsets[yy]; k < raftRuns.rowOffsets[yy + 1]; k += 2) {
-          const x0 = raftRuns.spans[k];
-          const x1 = raftRuns.spans[k + 1];
+        let innerK = raftInner?.rowOffsets[yy] ?? 0;
+        const innerEnd = raftInner?.rowOffsets[yy + 1] ?? 0;
+        for (let k = raftOuter.rowOffsets[yy]; k < raftOuter.rowOffsets[yy + 1]; k += 2) {
+          const x0 = raftOuter.spans[k];
+          const x1 = raftOuter.spans[k + 1];
           for (let xx = x0; xx <= x1; xx++) {
+            while (raftInner && innerK < innerEnd && raftInner.spans[innerK + 1] < xx) innerK += 2;
+            if (raftInner && innerK < innerEnd && raftInner.spans[innerK] <= xx && xx <= raftInner.spans[innerK + 1]) {
+              continue;
+            }
             const idx = row + xx;
             if (!res.data[idx] && !(depth.front[idx] < zq && zq < depth.back[idx])) {
               res.data[idx] = 255;

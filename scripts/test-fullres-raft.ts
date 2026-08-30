@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildFullResRaftRuns } from "../lib/fullRes";
+import { buildFullResRaftPlan, buildFullResRaftRuns } from "../lib/fullRes";
 
 function referenceRaft(
   front: Uint16Array,
@@ -56,6 +56,55 @@ for (const [radiusX, radiusY] of [[0, 0], [1, 1], [3, 1], [1, 3], [20, 7]] as co
     `raft radii ${radiusX}x${radiusY}`,
   );
 }
+
+const trayW = 21;
+const trayH = 21;
+const trayFront = new Uint16Array(trayW * trayH);
+const trayBack = new Uint16Array(trayW * trayH);
+trayFront.fill(65535);
+trayFront[10 * trayW + 10] = 10;
+trayBack[10 * trayW + 10] = 100;
+const tray = buildFullResRaftPlan(trayFront, trayBack, 50, trayW, trayH, {
+  floorLayers: 3,
+  marginX: 2,
+  marginY: 2,
+  rimEnabled: true,
+  rimWidthX: 2,
+  rimWidthY: 2,
+  rimLayers: 3,
+});
+const runContains = (runs: ReturnType<typeof buildFullResRaftRuns>, x: number, y: number) => {
+  for (let k = runs.rowOffsets[y]; k < runs.rowOffsets[y + 1]; k += 2) {
+    if (runs.spans[k] <= x && x <= runs.spans[k + 1]) return true;
+  }
+  return false;
+};
+assert.equal(runContains(tray.floorRuns[0], 14, 10), true, "full-res bottom includes spatula ledge");
+assert.equal(runContains(tray.floorRuns[2], 14, 10), false, "full-res floor tapers toward the rim");
+assert.ok(tray.rimOuter && tray.rimInner, "full-res tray has outer and inner perimeter runs");
+assert.equal(runContains(tray.rimOuter!, 13, 10), true, "full-res raised perimeter has its outer edge");
+assert.equal(runContains(tray.rimInner!, 13, 10), false, "full-res raised perimeter excludes its cavity");
+assert.equal(runContains(tray.rimInner!, 11, 10), true, "full-res tray cavity stays open above the floor");
+assert.equal(tray.rimLayers, 3, "full-res rim keeps the requested height");
+
+const bandFront = new Uint16Array(trayW * trayH);
+const bandBack = new Uint16Array(trayW * trayH);
+bandFront.fill(65535);
+bandFront[10 * trayW + 4] = 60;
+bandBack[10 * trayW + 4] = 100;
+const bandPlan = buildFullResRaftPlan(bandFront, bandBack, 50, trayW, trayH, {
+  floorLayers: 1,
+  marginX: 0,
+  marginY: 0,
+  rimEnabled: false,
+  rimWidthX: 0,
+  rimWidthY: 0,
+  rimLayers: 0,
+  footprintZQMax: 80,
+  extraFootprintRows: new Map([[10, new Uint16Array([17, 17])]]),
+});
+assert.equal(runContains(bandPlan.floorRuns[0], 4, 10), true, "raft footprint includes model geometry from the lower Z band");
+assert.equal(runContains(bandPlan.floorRuns[0], 17, 10), true, "raft footprint includes exported support feet");
 
 // The representation is proportional to row spans, not white pixels. A dense
 // 12K raft must therefore remain a few KiB rather than a 225 MiB Uint32 index.

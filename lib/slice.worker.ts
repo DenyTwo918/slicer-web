@@ -102,6 +102,9 @@ ctx.onmessage = async (ev: MessageEvent<SliceWorkerRequest>) => {
     const transfer: Transferable[] = [];
     if (result) for (const l of result.layers) transfer.push(l.data.buffer);
     if (supportPreview?.raftMask) transfer.push(supportPreview.raftMask.buffer);
+    if (supportPreview?.raftLayerMasks) {
+      for (const layer of supportPreview.raftLayerMasks) transfer.push(layer.buffer);
+    }
     const resp: SliceWorkerResponse = {
       id,
       ok: true,

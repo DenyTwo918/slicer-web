@@ -37,6 +37,9 @@ export interface PipelineSettings {
   raft: boolean;
   raftLayers: number;
   raftMarginMm: number;
+  raftRim?: boolean;
+  raftRimWidthMm?: number;
+  raftRimHeightMm?: number;
   aa: boolean;
 }
 
@@ -204,7 +207,14 @@ export async function runSlicePipeline(
   if (result && settings.raft) {
     const rr = applyRaft(
       result,
-      { enabled: true, layers: settings.raftLayers, marginMm: settings.raftMarginMm },
+      {
+        enabled: true,
+        layers: settings.raftLayers,
+        marginMm: settings.raftMarginMm,
+        rimEnabled: settings.raftRim,
+        rimWidthMm: settings.raftRimWidthMm,
+        rimHeightMm: settings.raftRimHeightMm,
+      },
       mmPerPx
     );
     result = rr.result;
@@ -223,6 +233,9 @@ export async function runSlicePipeline(
     }
     supportPreview.raftMask = rr.mask[0] ? new Uint8Array(rr.mask[0]) : null;
     supportPreview.raftLayers = Math.min(settings.raftLayers, result.layers.length);
+    supportPreview.raftLayerMasks = rr.mask
+      .filter((layer) => layer.length > 0)
+      .map((layer) => new Uint8Array(layer));
     if (opts?.collectSupportMask) {
       if (!supportMask) {
         supportMask = rr.mask;
