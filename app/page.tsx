@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import Viewport from "@/components/Viewport";
 import { parseStl, type StlMesh } from "@/lib/stl";
 import { parseObj } from "@/lib/obj";
+import { extractMeshTriangles, splitConnectedShells } from "@/lib/meshSplit";
 import {
   findBestOrientation,
   meshStats,
@@ -502,6 +503,39 @@ export default function Home() {
     setSelectedId(copy.id);
     invalidateSlice();
     showToast("ok", "Model duplikován ✓");
+  }, [selectedId, models, invalidateSlice]);
+
+  const splitSel = useCallback(() => {
+    if (!selectedId) return;
+    const item = models.find((model) => model.id === selectedId);
+    if (!item) return;
+
+    const shells = splitConnectedShells(item.mesh);
+    if (shells.length <= 1) {
+      showToast("ok", "Model tvoří jen jednu propojenou část.");
+      return;
+    }
+
+    const canRestoreOriginal = item.original.triangleCount === item.mesh.triangleCount;
+    const parts: ModelItem[] = shells.map((shell, index) => ({
+      ...item,
+      id: nextId++,
+      name: `${item.name} — část ${index + 1}`,
+      mesh: shell.mesh,
+      original: canRestoreOriginal
+        ? extractMeshTriangles(item.original, shell.triangleIndices)
+        : shell.mesh,
+      transform: { ...item.transform },
+    }));
+
+    setModels((previous) => {
+      const next = previous.flatMap((model) => model.id === selectedId ? parts : [model]);
+      modelsRef.current = next;
+      return next;
+    });
+    setSelectedId(parts[0].id);
+    invalidateSlice();
+    showToast("ok", `Rozděleno na ${parts.length} propojených částí ✓`);
   }, [selectedId, models, invalidateSlice]);
 
   const downloadSelStl = useCallback(() => {
@@ -1312,6 +1346,7 @@ const doSlice = useCallback(async () => {
               <button className="mp-btn" onClick={standUpSel}>Postav</button>
               <button className="mp-btn" onClick={resetSel}>Vrať</button>
               <button className="mp-btn" onClick={duplicateSel}>Duplikovat</button>
+              <button className="mp-btn" onClick={splitSel}>Rozdělit části</button>
               <button className="mp-btn" onClick={centerSel}>Centrovat</button>
               <button className="mp-btn mp-danger" onClick={removeSel}>Smaž</button>
             </div>
