@@ -281,6 +281,49 @@ function SliceLayerSurface({ layer, printer }: { layer: LayerPreviewData; printe
 }
 
 /** Raft jako skutečný vektorový extrudovaný mesh, nikoli pixelová textura. */
+export function buildRaftPreviewGeometries(
+  preview: SupportPreviewData,
+  printer: PrinterProfile,
+): THREE.BufferGeometry[] {
+  const exactLayers = preview.raftLayerMasks?.filter((mask) => mask.length > 0) ?? [];
+  if (exactLayers.length > 0) {
+    return exactLayers.flatMap((mask, layerIndex) => {
+      const shapes = raftShapes(
+        mask,
+        preview.resolutionX,
+        preview.resolutionY,
+        printer,
+        true,
+        0,
+        true,
+      );
+      if (shapes.length === 0) return [];
+      const geometry = new THREE.ExtrudeGeometry(shapes, {
+        depth: preview.layerHeight,
+        bevelEnabled: false,
+        curveSegments: 4,
+      });
+      geometry.translate(0, 0, layerIndex * preview.layerHeight);
+      return [geometry];
+    });
+  }
+  const mask = preview.raftMask;
+  if (!mask || mask.length === 0) return [];
+  const shapes = raftShapes(
+    mask,
+    preview.resolutionX,
+    preview.resolutionY,
+    printer,
+    true,
+  );
+  if (shapes.length === 0) return [];
+  return [new THREE.ExtrudeGeometry(shapes, {
+    depth: Math.max(preview.layerHeight, (preview.raftLayers ?? 1) * preview.layerHeight),
+    bevelEnabled: false,
+    curveSegments: 4,
+  })];
+}
+
 function RaftPreview({
   preview,
   printer,
@@ -290,45 +333,10 @@ function RaftPreview({
   printer: PrinterProfile;
   cutZ: number;
 }) {
-  const geometries = useMemo(() => {
-    const exactLayers = preview.raftLayerMasks?.filter((mask) => mask.length > 0) ?? [];
-    if (exactLayers.length > 0) {
-      return exactLayers.flatMap((mask, layerIndex) => {
-        const shapes = raftShapes(
-          mask,
-          preview.resolutionX,
-          preview.resolutionY,
-          printer,
-          true,
-          0,
-          "faithful",
-        );
-        if (shapes.length === 0) return [];
-        const geometry = new THREE.ExtrudeGeometry(shapes, {
-          depth: preview.layerHeight,
-          bevelEnabled: false,
-          curveSegments: 4,
-        });
-        geometry.translate(0, 0, layerIndex * preview.layerHeight);
-        return [geometry];
-      });
-    }
-    const mask = preview.raftMask;
-    if (!mask || mask.length === 0) return [];
-    const shapes = raftShapes(
-      mask,
-      preview.resolutionX,
-      preview.resolutionY,
-      printer,
-      true,
-    );
-    if (shapes.length === 0) return [];
-    return [new THREE.ExtrudeGeometry(shapes, {
-      depth: Math.max(preview.layerHeight, (preview.raftLayers ?? 1) * preview.layerHeight),
-      bevelEnabled: false,
-      curveSegments: 4,
-    })];
-  }, [preview, printer]);
+  const geometries = useMemo(
+    () => buildRaftPreviewGeometries(preview, printer),
+    [preview, printer],
+  );
   const clippingPlane = useMemo(
     () => new THREE.Plane(new THREE.Vector3(0, 0, -1), cutZ),
     [cutZ]
