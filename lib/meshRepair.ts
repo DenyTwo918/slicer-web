@@ -41,6 +41,21 @@ export interface MeshAnalysisOptions {
   tinyShellMaxSizeMm?: number;
 }
 
+export interface MeshRepairPlan {
+  removeDegenerateTriangles: number[];
+  removeDuplicateTriangles: number[];
+  flipTriangles: number[];
+  unresolvedWindingComponents: number;
+}
+
+export interface MeshRepairResult {
+  mesh: StlMesh;
+  sourceTriangleIndices: number[];
+  removedDegenerate: number;
+  removedDuplicates: number;
+  flippedTriangles: number;
+}
+
 function makeGroup(samples: MeshIssueSample[], totalCount: number): MeshIssueGroup {
   return { count: totalCount, samples };
 }
@@ -236,5 +251,154 @@ export function analyzeMesh(
     tinyShells: makeGroup(tinySamples, tinyCount),
     repairableCount: degenerateCount + duplicateCount + windingCount,
     unresolvedCount: boundaryCount + nonManifoldCount + tinyCount,
+  };
+}
+
+export function planSafeMeshRepair(mesh: StlMesh, report: MeshRepairReport): MeshRepairPlan {
+  if (report.triangleCount !== mesh.triangleCount) {
+    throw new Error("Report opravy neodpovídá aktuálnímu modelu.");
+  }
+
+  // Dry-run potřebuje úplné indexy, zatímco běžný UI report smí mít omezené vzorky.
+  const fullReport = analyzeMesh(mesh, { maxSamplesPerKind: mesh.triangleCount * 3 });
+  const removeDegenerateTriangles = fullReport.degenerateTriangles.samples
+    .map((sample) => sample.triangleIndices[0])
+    .sort((a, b) => a - b);
+  const removeDuplicateTriangles = fullReport.duplicateFaces.samples
+    .map((sample) => sample.triangleIndices[0])
+    .sort((a, b) => a - b);
+  const removed = new Set([...removeDegenerateTriangles, ...removeDuplicateTriangles]);
+  const topology = buildMeshTopology(mesh);
+
+  type Constraint = { triangle: number; xor: 0 | 1 };
+  const constraints: Constraint[][] = Array.from({ length: mesh.triangleCount }, () => []);
+  for (const edge of topology.edges) {
+    const uses = edge.uses.filter((use) => !removed.has(use.triangleIndex));
+    if (uses.length !== 2) continue;
+    const [a, b] = uses;
+    const sameDirection = a.startVertex === b.startVertex && a.endVertex === b.endVertex;
+    const xor: 0 | 1 = sameDirection ? 1 : 0;
+    constraints[a.triangleIndex].push({ triangle: b.triangleIndex, xor });
+    constraints[b.triangleIndex].push({ triangle: a.triangleIndex, xor });
+  }
+  for (const list of constraints) list.sort((a, b) => a.triangle - b.triangle || a.xor - b.xor);
+
+  const assignment = new Int8Array(mesh.triangleCount);
+  assignment.fill(-1);
+  const flipTriangles: number[] = [];
+  let unresolvedWindingComponents = 0;
+
+  for (let first = 0; first < mesh.triangleCount; first++) {
+    if (removed.has(first) || assignment[first] !== -1) continue;
+    assignment[first] = 0;
+    const queue = [first];
+    const component: number[] = [];
+    let conflict = false;
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const triangle = queue[cursor];
+      component.push(triangle);
+      for (const constraint of constraints[triangle]) {
+        const expected = (assignment[triangle] ^ constraint.xor) as 0 | 1;
+        if (assignment[constraint.triangle] === -1) {
+          assignment[constraint.triangle] = expected;
+          queue.push(constraint.triangle);
+        } else if (assignment[constraint.triangle] !== expected) {
+          conflict = true;
+        }
+      }
+    }
+    if (conflict) {
+      unresolvedWindingComponents++;
+      continue;
+    }
+
+    const ones = component.filter((triangle) => assignment[triangle] === 1).length;
+    const flipValue = ones <= component.length - ones ? 1 : 0;
+    for (const triangle of component) {
+      if (assignment[triangle] === flipValue) flipTriangles.push(triangle);
+    }
+  }
+
+  flipTriangles.sort((a, b) => a - b);
+  return {
+    removeDegenerateTriangles,
+    removeDuplicateTriangles,
+    flipTriangles,
+    unresolvedWindingComponents,
+  };
+}
+
+function normalForTriangle(positions: Float32Array, offset: number): [number, number, number] {
+  const ax = positions[offset + 3] - positions[offset];
+  const ay = positions[offset + 4] - positions[offset + 1];
+  const az = positions[offset + 5] - positions[offset + 2];
+  const bx = positions[offset + 6] - positions[offset];
+  const by = positions[offset + 7] - positions[offset + 1];
+  const bz = positions[offset + 8] - positions[offset + 2];
+  const nx = ay * bz - az * by;
+  const ny = az * bx - ax * bz;
+  const nz = ax * by - ay * bx;
+  const length = Math.hypot(nx, ny, nz) || 1;
+  return [nx / length, ny / length, nz / length];
+}
+
+export function applySafeMeshRepair(mesh: StlMesh, plan: MeshRepairPlan): MeshRepairResult {
+  const degenerate = new Set(plan.removeDegenerateTriangles);
+  const duplicates = new Set(plan.removeDuplicateTriangles);
+  const removed = new Set([...degenerate, ...duplicates]);
+  const flips = new Set(plan.flipTriangles);
+  const sourceTriangleIndices: number[] = [];
+  for (let triangle = 0; triangle < mesh.triangleCount; triangle++) {
+    if (!removed.has(triangle)) sourceTriangleIndices.push(triangle);
+  }
+  if (sourceTriangleIndices.length === 0) {
+    throw new Error("Bezpečná oprava by vytvořila prázdný model.");
+  }
+
+  for (const index of [...removed, ...flips]) {
+    if (!Number.isInteger(index) || index < 0 || index >= mesh.triangleCount) {
+      throw new Error(`Plán opravy obsahuje neplatný index trojúhelníku: ${index}.`);
+    }
+  }
+
+  const positions = new Float32Array(sourceTriangleIndices.length * 9);
+  const normals = new Float32Array(sourceTriangleIndices.length * 9);
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+
+  sourceTriangleIndices.forEach((sourceTriangle, outputTriangle) => {
+    const sourceOffset = sourceTriangle * 9;
+    const outputOffset = outputTriangle * 9;
+    positions.set(mesh.positions.subarray(sourceOffset, sourceOffset + 9), outputOffset);
+    if (flips.has(sourceTriangle)) {
+      for (let axis = 0; axis < 3; axis++) {
+        const temp = positions[outputOffset + 3 + axis];
+        positions[outputOffset + 3 + axis] = positions[outputOffset + 6 + axis];
+        positions[outputOffset + 6 + axis] = temp;
+      }
+    }
+    const normal = normalForTriangle(positions, outputOffset);
+    for (let vertex = 0; vertex < 3; vertex++) {
+      const offset = outputOffset + vertex * 3;
+      normals.set(normal, offset);
+      for (let axis = 0; axis < 3; axis++) {
+        const value = positions[offset + axis];
+        if (value < min[axis]) min[axis] = value;
+        if (value > max[axis]) max[axis] = value;
+      }
+    }
+  });
+
+  return {
+    mesh: {
+      positions,
+      normals,
+      triangleCount: sourceTriangleIndices.length,
+      bounds: { min, max },
+    },
+    sourceTriangleIndices,
+    removedDegenerate: degenerate.size,
+    removedDuplicates: duplicates.size,
+    flippedTriangles: sourceTriangleIndices.filter((triangle) => flips.has(triangle)).length,
   };
 }
