@@ -66,6 +66,16 @@ assert.equal(
   "STL float noise within welding tolerance keeps a shared edge connected",
 );
 
+const toleranceBoundaryEdge = meshFromTriangles([
+  [[0.49e-5, 0, 0], [1 + 0.49e-5, 0, 0], [0, 1, 0]],
+  [[0.51e-5, 0, 0], [1 + 0.51e-5, 0, 0], [1, 1, 0]],
+]);
+assert.equal(
+  splitConnectedShells(toleranceBoundaryEdge).length,
+  1,
+  "vertices within tolerance weld even when they fall on opposite quantization cells",
+);
+
 const transformedOriginal = meshFromTriangles([
   ...tetra([100, 0, 0]),
   ...tetra([110, 0, 0]),
