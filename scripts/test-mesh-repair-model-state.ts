@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   applyRepairToModelState,
+  duplicateRepairableModelState,
   restoreRepairBackup,
 } from "../lib/meshRepairModelState";
 import { parseAsciiStl } from "../lib/stl";
@@ -39,5 +40,13 @@ assert.deepEqual(restored.transform, transform);
 assert.equal(restored.repairBackup, undefined);
 
 assert.equal(restoreRepairBackup(item), item, "no backup keeps existing reset path untouched");
+
+const duplicated = duplicateRepairableModelState(next, { ...next.transform, x: 31, y: 32 });
+assert.deepEqual(duplicated.transform, { ...next.transform, x: 31, y: 32 });
+assert.equal(
+  duplicated.repairBackup,
+  undefined,
+  "a repaired duplicate must not restore the source model's transform",
+);
 
 console.log("[OK] mesh repair state preserves transform and supports one-level restore");

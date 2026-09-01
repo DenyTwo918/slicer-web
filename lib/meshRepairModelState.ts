@@ -37,3 +37,14 @@ export function restoreRepairBackup<
     repairBackup: undefined,
   };
 }
+
+export function duplicateRepairableModelState<
+  TModel extends RepairableModel<object>,
+>(item: TModel, transform: TModel["transform"]): TModel {
+  return {
+    ...item,
+    transform,
+    // A duplicate is independent; restoring the source backup would move it onto the source.
+    repairBackup: undefined,
+  };
+}

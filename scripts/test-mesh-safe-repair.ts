@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   analyzeMesh,
+  analyzeMeshForSafeRepair,
   applySafeMeshRepair,
   planSafeMeshRepair,
 } from "../lib/meshRepair";
@@ -85,5 +86,26 @@ assert.throws(
   () => applySafeMeshRepair(allDegenerate, planSafeMeshRepair(allDegenerate, analyzeMesh(allDegenerate))),
   /prázdný model/i,
 );
+
+const bridgeWeld = meshFromTriangles([
+  [[0, 0, 0], [1.5e-5, 0, 0], [0, 1, 0]],
+  [[0.75e-5, 0, 0], [2, 0, 0], [2, 1, 0]],
+]);
+const bridgePlan = planSafeMeshRepair(bridgeWeld, analyzeMesh(bridgeWeld));
+assert.deepEqual(
+  bridgePlan.removeDegenerateTriangles,
+  [],
+  "transitive proximity welding must not make a nonzero-area source face removable",
+);
+assert.equal(applySafeMeshRepair(bridgeWeld, bridgePlan).mesh.triangleCount, 2);
+
+const manyDegenerates = meshFromTriangles(Array.from({ length: 250 }, (_, index) => [
+  [index, 0, 0],
+  [index, 0, 0],
+  [index, 1, 0],
+] as Tri));
+const boundedAnalysis = analyzeMeshForSafeRepair(manyDegenerates, { maxSamplesPerKind: 3 });
+assert.equal(boundedAnalysis.report.degenerateTriangles.samples.length, 3);
+assert.equal(boundedAnalysis.plan.removeDegenerateTriangles.length, 250);
 
 console.log("[OK] safe mesh repair preserves intended geometry");

@@ -1,5 +1,5 @@
 import type { StlMesh } from "./stl";
-import { buildMeshTopology } from "./meshTopology";
+import { buildMeshTopology, DEFAULT_WELD_TOLERANCE_MM } from "./meshTopology";
 
 export type MeshIssueKind =
   | "degenerate-triangle"
@@ -58,6 +58,13 @@ export interface MeshRepairResult {
   flippedTriangles: number;
 }
 
+interface MeshAnalysisDetails {
+  report: MeshRepairReport;
+  topology: ReturnType<typeof buildMeshTopology>;
+  degenerateTriangleIndices: number[];
+  duplicateTriangleIndices: number[];
+}
+
 function makeGroup(samples: MeshIssueSample[], totalCount: number): MeshIssueGroup {
   return { count: totalCount, samples };
 }
@@ -91,6 +98,55 @@ function triangleArea(mesh: StlMesh, triangleIndex: number): number {
   return Math.hypot(nx, ny, nz) * 0.5;
 }
 
+function occurrencesWithinTolerance(
+  mesh: StlMesh,
+  firstOccurrence: number,
+  secondOccurrence: number,
+  toleranceSquared: number,
+): boolean {
+  const first = firstOccurrence * 3;
+  const second = secondOccurrence * 3;
+  const dx = mesh.positions[first] - mesh.positions[second];
+  const dy = mesh.positions[first + 1] - mesh.positions[second + 1];
+  const dz = mesh.positions[first + 2] - mesh.positions[second + 2];
+  return dx * dx + dy * dy + dz * dz <= toleranceSquared;
+}
+
+function hasRepeatedSourceVertex(
+  mesh: StlMesh,
+  triangleIndex: number,
+  toleranceSquared: number,
+): boolean {
+  const base = triangleIndex * 3;
+  return occurrencesWithinTolerance(mesh, base, base + 1, toleranceSquared)
+    || occurrencesWithinTolerance(mesh, base + 1, base + 2, toleranceSquared)
+    || occurrencesWithinTolerance(mesh, base + 2, base, toleranceSquared);
+}
+
+const TRIANGLE_VERTEX_PERMUTATIONS = [
+  [0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0],
+] as const;
+
+function trianglesCoincide(
+  mesh: StlMesh,
+  firstTriangle: number,
+  secondTriangle: number,
+  toleranceSquared: number,
+): boolean {
+  const firstBase = firstTriangle * 3;
+  const secondBase = secondTriangle * 3;
+  return TRIANGLE_VERTEX_PERMUTATIONS.some((permutation) =>
+    permutation.every((secondVertex, firstVertex) =>
+      occurrencesWithinTolerance(
+        mesh,
+        firstBase + firstVertex,
+        secondBase + secondVertex,
+        toleranceSquared,
+      )
+    )
+  );
+}
+
 function modelDiagonal(mesh: StlMesh): number {
   return Math.hypot(
     mesh.bounds.max[0] - mesh.bounds.min[0],
@@ -116,25 +172,26 @@ function shellSize(mesh: StlMesh, triangles: number[]): number {
   return Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
 }
 
-export function analyzeMesh(
+function analyzeMeshDetailed(
   mesh: StlMesh,
   options: MeshAnalysisOptions = {},
-): MeshRepairReport {
+): MeshAnalysisDetails {
   const maxSamples = Math.max(0, Math.floor(options.maxSamplesPerKind ?? 100));
-  const topology = buildMeshTopology(mesh, { weldToleranceMm: options.weldToleranceMm });
+  const weldTolerance = options.weldToleranceMm ?? DEFAULT_WELD_TOLERANCE_MM;
+  const weldToleranceSquared = weldTolerance * weldTolerance;
+  const topology = buildMeshTopology(mesh, { weldToleranceMm: weldTolerance });
   const diagonal = modelDiagonal(mesh);
   const areaEpsilon = Math.max(1e-12, diagonal * diagonal * 1e-14);
 
   const degenerate = new Uint8Array(mesh.triangleCount);
+  const degenerateTriangleIndices: number[] = [];
   const degenerateSamples: MeshIssueSample[] = [];
   let degenerateCount = 0;
   for (let triangle = 0; triangle < mesh.triangleCount; triangle++) {
-    const base = triangle * 3;
-    const a = topology.weldedVertexByOccurrence[base];
-    const b = topology.weldedVertexByOccurrence[base + 1];
-    const c = topology.weldedVertexByOccurrence[base + 2];
-    if (a === b || b === c || c === a || triangleArea(mesh, triangle) <= areaEpsilon) {
+    if (hasRepeatedSourceVertex(mesh, triangle, weldToleranceSquared)
+      || triangleArea(mesh, triangle) <= areaEpsilon) {
       degenerate[triangle] = 1;
+      degenerateTriangleIndices.push(triangle);
       degenerateCount++;
       if (degenerateSamples.length < maxSamples) {
         degenerateSamples.push({ kind: "degenerate-triangle", triangleIndices: [triangle] });
@@ -143,7 +200,8 @@ export function analyzeMesh(
   }
 
   const duplicate = new Uint8Array(mesh.triangleCount);
-  const firstTriangleByFace = new Map<string, number>();
+  const duplicateTriangleIndices: number[] = [];
+  const trianglesByWeldedFace = new Map<string, number[]>();
   const duplicateSamples: MeshIssueSample[] = [];
   let duplicateCount = 0;
   for (let triangle = 0; triangle < mesh.triangleCount; triangle++) {
@@ -155,14 +213,19 @@ export function analyzeMesh(
       topology.weldedVertexByOccurrence[base + 2],
     ].sort((a, b) => a - b);
     const key = `${vertices[0]}|${vertices[1]}|${vertices[2]}`;
-    if (firstTriangleByFace.has(key)) {
+    const candidates = trianglesByWeldedFace.get(key) ?? [];
+    if (candidates.some((candidate) =>
+      trianglesCoincide(mesh, candidate, triangle, weldToleranceSquared)
+    )) {
       duplicate[triangle] = 1;
+      duplicateTriangleIndices.push(triangle);
       duplicateCount++;
       if (duplicateSamples.length < maxSamples) {
         duplicateSamples.push({ kind: "duplicate-face", triangleIndices: [triangle] });
       }
     } else {
-      firstTriangleByFace.set(key, triangle);
+      candidates.push(triangle);
+      trianglesByWeldedFace.set(key, candidates);
     }
   }
 
@@ -261,17 +324,29 @@ export function analyzeMesh(
   }
 
   return {
-    triangleCount: mesh.triangleCount,
-    shellCount: shells.length,
-    degenerateTriangles: makeGroup(degenerateSamples, degenerateCount),
-    duplicateFaces: makeGroup(duplicateSamples, duplicateCount),
-    boundaryEdges: makeGroup(boundarySamples, boundaryCount),
-    nonManifoldEdges: makeGroup(nonManifoldSamples, nonManifoldCount),
-    inconsistentWinding: makeGroup(windingSamples, windingCount),
-    tinyShells: makeGroup(tinySamples, tinyCount),
-    repairableCount: degenerateCount + duplicateCount + windingCount,
-    unresolvedCount: boundaryCount + nonManifoldCount + tinyCount,
+    report: {
+      triangleCount: mesh.triangleCount,
+      shellCount: shells.length,
+      degenerateTriangles: makeGroup(degenerateSamples, degenerateCount),
+      duplicateFaces: makeGroup(duplicateSamples, duplicateCount),
+      boundaryEdges: makeGroup(boundarySamples, boundaryCount),
+      nonManifoldEdges: makeGroup(nonManifoldSamples, nonManifoldCount),
+      inconsistentWinding: makeGroup(windingSamples, windingCount),
+      tinyShells: makeGroup(tinySamples, tinyCount),
+      repairableCount: degenerateCount + duplicateCount + windingCount,
+      unresolvedCount: boundaryCount + nonManifoldCount + tinyCount,
+    },
+    topology,
+    degenerateTriangleIndices,
+    duplicateTriangleIndices,
   };
+}
+
+export function analyzeMesh(
+  mesh: StlMesh,
+  options: MeshAnalysisOptions = {},
+): MeshRepairReport {
+  return analyzeMeshDetailed(mesh, options).report;
 }
 
 export function limitMeshRepairReportSamples(
@@ -294,7 +369,11 @@ export function limitMeshRepairReportSamples(
   };
 }
 
-export function planSafeMeshRepair(mesh: StlMesh, report: MeshRepairReport): MeshRepairPlan {
+function planSafeMeshRepairLegacy(
+  mesh: StlMesh,
+  report: MeshRepairReport,
+  analysisDetails?: MeshAnalysisDetails,
+): MeshRepairPlan {
   if (report.triangleCount !== mesh.triangleCount) {
     throw new Error("Report opravy neodpovídá aktuálnímu modelu.");
   }
@@ -303,17 +382,16 @@ export function planSafeMeshRepair(mesh: StlMesh, report: MeshRepairReport): Mes
   const removalSamplesAreComplete =
     report.degenerateTriangles.samples.length === report.degenerateTriangles.count
     && report.duplicateFaces.samples.length === report.duplicateFaces.count;
-  const fullReport = removalSamplesAreComplete
-    ? report
-    : analyzeMesh(mesh, { maxSamplesPerKind: mesh.triangleCount * 3 });
-  const removeDegenerateTriangles = fullReport.degenerateTriangles.samples
-    .map((sample) => sample.triangleIndices[0])
-    .sort((a, b) => a - b);
-  const removeDuplicateTriangles = fullReport.duplicateFaces.samples
-    .map((sample) => sample.triangleIndices[0])
-    .sort((a, b) => a - b);
+  const details = analysisDetails
+    ?? (removalSamplesAreComplete ? undefined : analyzeMeshDetailed(mesh, { maxSamplesPerKind: 0 }));
+  const removeDegenerateTriangles = details
+    ? details.degenerateTriangleIndices
+    : report.degenerateTriangles.samples.map((sample) => sample.triangleIndices[0]);
+  const removeDuplicateTriangles = details
+    ? details.duplicateTriangleIndices
+    : report.duplicateFaces.samples.map((sample) => sample.triangleIndices[0]);
   const removed = new Set([...removeDegenerateTriangles, ...removeDuplicateTriangles]);
-  const topology = buildMeshTopology(mesh);
+  const topology = details?.topology ?? buildMeshTopology(mesh);
 
   type Constraint = { triangle: number; xor: 0 | 1 };
   const constraints: Constraint[][] = Array.from({ length: mesh.triangleCount }, () => []);
@@ -370,6 +448,21 @@ export function planSafeMeshRepair(mesh: StlMesh, report: MeshRepairReport): Mes
     removeDuplicateTriangles,
     flipTriangles,
     unresolvedWindingComponents,
+  };
+}
+
+export function planSafeMeshRepair(mesh: StlMesh, report: MeshRepairReport): MeshRepairPlan {
+  return planSafeMeshRepairLegacy(mesh, report);
+}
+
+export function analyzeMeshForSafeRepair(
+  mesh: StlMesh,
+  options: MeshAnalysisOptions = {},
+): { report: MeshRepairReport; plan: MeshRepairPlan } {
+  const details = analyzeMeshDetailed(mesh, options);
+  return {
+    report: details.report,
+    plan: planSafeMeshRepairLegacy(mesh, details.report, details),
   };
 }
 

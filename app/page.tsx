@@ -13,6 +13,7 @@ import {
 } from "@/lib/meshRepair";
 import {
   applyRepairToModelState,
+  duplicateRepairableModelState,
   restoreRepairBackup,
   type RepairableModel,
 } from "@/lib/meshRepairModelState";
@@ -657,12 +658,11 @@ export default function Home() {
     if (!selectedId) return;
     const item = models.find((m) => m.id === selectedId);
     if (!item) return;
-    const copy: ModelItem = {
+    const copy: ModelItem = duplicateRepairableModelState({
       ...item,
       id: nextId++,
       name: item.name + " (kopie)",
-      transform: { ...item.transform, x: item.transform.x + 30, y: item.transform.y + 30 },
-    };
+    }, { ...item.transform, x: item.transform.x + 30, y: item.transform.y + 30 });
     setModels((prev) => {
       const next = [...prev, copy];
       modelsRef.current = next;
