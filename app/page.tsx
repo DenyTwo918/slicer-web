@@ -511,6 +511,7 @@ export default function Home() {
     ? selectedRepairPlan.removeDegenerateTriangles.length
       + selectedRepairPlan.removeDuplicateTriangles.length
       + selectedRepairPlan.flipTriangles.length
+      + selectedRepairPlan.fillBoundaryTriangles.length
     : 0;
   const activeMeshDiagnostic = useMemo(() => {
     if (!activeMeshIssue || activeMeshIssue.modelId !== selectedId) return null;
@@ -550,7 +551,8 @@ export default function Home() {
     if (selectedId === null || !selected || !selectedRepairPlan) return;
     const plannedChanges = selectedRepairPlan.removeDegenerateTriangles.length
       + selectedRepairPlan.removeDuplicateTriangles.length
-      + selectedRepairPlan.flipTriangles.length;
+      + selectedRepairPlan.flipTriangles.length
+      + selectedRepairPlan.fillBoundaryTriangles.length;
     if (plannedChanges === 0) {
       showToast("ok", "Model nemá bezpečně opravitelné vady.");
       return;
@@ -561,7 +563,7 @@ export default function Home() {
       setActiveMeshIssue(null);
       showToast(
         "ok",
-        `Opraveno ✓ · odstraněno ${result.removedDegenerate} degenerovaných + ${result.removedDuplicates} duplicitních · otočeno ${result.flippedTriangles}`,
+        `Opraveno ✓ · odstraněno ${result.removedDegenerate} degenerovaných + ${result.removedDuplicates} duplicitních · otočeno ${result.flippedTriangles} · uzavřeno ${result.filledBoundaryLoops} otvorů (${result.addedTriangles} nových ploch)`,
         9000,
       );
     } catch (error) {
@@ -1556,6 +1558,10 @@ const doSlice = useCallback(async () => {
                   {MESH_ISSUE_ROWS.map((row) => {
                     const group = selectedReport[row.key];
                     if (group.count === 0) return null;
+                    const repairable = row.repairable || (
+                      row.key === "boundaryEdges"
+                      && (selectedRepairPlan?.repairedBoundaryEdgeCount ?? 0) > 0
+                    );
                     const active = activeMeshIssue?.modelId === selected.id
                       && activeMeshIssue.group === row.key;
                     return (
@@ -1565,7 +1571,7 @@ const doSlice = useCallback(async () => {
                         onClick={() => selectMeshIssue(row.key)}
                         title="Zvýraznit nález červeně ve 3D"
                       >
-                        <span>{row.repairable ? "🔧" : "⚠"} {row.label}</span>
+                        <span>{repairable ? "🔧" : "⚠"} {row.label}</span>
                         <b>{group.count}</b>
                       </button>
                     );
@@ -1587,6 +1593,9 @@ const doSlice = useCallback(async () => {
                   <div className="mesh-repair-plan">
                     Bezpečný plán: odstranit {selectedRepairPlan.removeDegenerateTriangles.length} degenerovaných
                     {" + "}{selectedRepairPlan.removeDuplicateTriangles.length} duplicitních · otočit {selectedRepairPlan.flipTriangles.length} ploch
+                    {selectedRepairPlan.fillBoundaryLoopCount > 0
+                      ? ` · uzavřít ${selectedRepairPlan.fillBoundaryLoopCount} otvorů (${selectedRepairPlan.fillBoundaryTriangles.length} nových ploch)`
+                      : ""}
                     {selectedRepairPlan.unresolvedWindingComponents > 0
                       ? ` · ${selectedRepairPlan.unresolvedWindingComponents} konfliktů zůstane označeno`
                       : ""}
@@ -1600,7 +1609,8 @@ const doSlice = useCallback(async () => {
                   Bezpečně opravit
                 </button>
                 <p className="mp-hint">
-                  Díry, non-manifold hrany a malé části se pouze označí — automaticky se nemažou ani nezavírají.
+                  Jednoduché uzavřené a rovinné díry se bezpečně doplní. Neplanární či větvené okraje,
+                  non-manifold hrany a malé části zůstanou označené pro ruční kontrolu.
                 </p>
               </>
             )}

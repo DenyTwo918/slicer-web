@@ -25,6 +25,8 @@ const result: MeshRepairResult = {
   removedDegenerate: 0,
   removedDuplicates: 0,
   flippedTriangles: 1,
+  addedTriangles: 0,
+  filledBoundaryLoops: 0,
 };
 
 const next = applyRepairToModelState(item, result);

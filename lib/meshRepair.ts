@@ -1,5 +1,6 @@
 import type { StlMesh } from "./stl";
 import { buildMeshTopology, DEFAULT_WELD_TOLERANCE_MM } from "./meshTopology";
+import { planSafeBoundaryFill, type MeshPatchTriangle } from "./meshHoleRepair";
 
 export type MeshIssueKind =
   | "degenerate-triangle"
@@ -47,6 +48,9 @@ export interface MeshRepairPlan {
   removeDegenerateTriangles: number[];
   removeDuplicateTriangles: number[];
   flipTriangles: number[];
+  fillBoundaryTriangles: MeshPatchTriangle[];
+  fillBoundaryLoopCount: number;
+  repairedBoundaryEdgeCount: number;
   unresolvedWindingComponents: number;
 }
 
@@ -56,6 +60,8 @@ export interface MeshRepairResult {
   removedDegenerate: number;
   removedDuplicates: number;
   flippedTriangles: number;
+  addedTriangles: number;
+  filledBoundaryLoops: number;
 }
 
 interface MeshAnalysisDetails {
@@ -443,10 +449,14 @@ function planSafeMeshRepairLegacy(
   }
 
   flipTriangles.sort((a, b) => a - b);
+  const boundaryFill = planSafeBoundaryFill(mesh, topology, removed, new Set(flipTriangles));
   return {
     removeDegenerateTriangles,
     removeDuplicateTriangles,
     flipTriangles,
+    fillBoundaryTriangles: boundaryFill.triangles,
+    fillBoundaryLoopCount: boundaryFill.loopCount,
+    repairedBoundaryEdgeCount: boundaryFill.repairedBoundaryEdgeCount,
     unresolvedWindingComponents,
   };
 }
@@ -499,8 +509,11 @@ export function applySafeMeshRepair(mesh: StlMesh, plan: MeshRepairPlan): MeshRe
     }
   }
 
-  const positions = new Float32Array(sourceTriangleIndices.length * 9);
-  const normals = new Float32Array(sourceTriangleIndices.length * 9);
+  const fillBoundaryTriangles = plan.fillBoundaryTriangles ?? [];
+  const sourceTriangleCount = sourceTriangleIndices.length;
+  const outputTriangleCount = sourceTriangleCount + fillBoundaryTriangles.length;
+  const positions = new Float32Array(outputTriangleCount * 9);
+  const normals = new Float32Array(outputTriangleCount * 9);
   const min: [number, number, number] = [Infinity, Infinity, Infinity];
   const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
 
@@ -527,16 +540,39 @@ export function applySafeMeshRepair(mesh: StlMesh, plan: MeshRepairPlan): MeshRe
     }
   });
 
+  fillBoundaryTriangles.forEach((triangle, patchIndex) => {
+    if (triangle.length !== 3 || triangle.some((point) =>
+      point.length !== 3 || point.some((value) => !Number.isFinite(value)))) {
+      throw new Error("Plán opravy obsahuje neplatnou výplň otevřené plochy.");
+    }
+    const outputTriangle = sourceTriangleCount + patchIndex;
+    const outputOffset = outputTriangle * 9;
+    for (let vertex = 0; vertex < 3; vertex++) {
+      const offset = outputOffset + vertex * 3;
+      positions.set(triangle[vertex], offset);
+      for (let axis = 0; axis < 3; axis++) {
+        const value = triangle[vertex][axis];
+        if (value < min[axis]) min[axis] = value;
+        if (value > max[axis]) max[axis] = value;
+      }
+    }
+    const normal = normalForTriangle(positions, outputOffset);
+    for (let vertex = 0; vertex < 3; vertex++) normals.set(normal, outputOffset + vertex * 3);
+    sourceTriangleIndices.push(-1);
+  });
+
   return {
     mesh: {
       positions,
       normals,
-      triangleCount: sourceTriangleIndices.length,
+      triangleCount: outputTriangleCount,
       bounds: { min, max },
     },
     sourceTriangleIndices,
     removedDegenerate: degenerate.size,
     removedDuplicates: duplicates.size,
     flippedTriangles: sourceTriangleIndices.filter((triangle) => flips.has(triangle)).length,
+    addedTriangles: fillBoundaryTriangles.length,
+    filledBoundaryLoops: plan.fillBoundaryLoopCount ?? 0,
   };
 }

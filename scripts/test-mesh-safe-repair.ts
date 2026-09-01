@@ -75,6 +75,68 @@ const nonManifoldResult = applySafeMeshRepair(nonManifold, planSafeMeshRepair(no
 assert.equal(nonManifoldResult.mesh.triangleCount, 3);
 assert.equal(analyzeMesh(nonManifoldResult.mesh).nonManifoldEdges.count, 1);
 
+// Regression: a closed, unbranched boundary loop left by one missing tetrahedron
+// face must be capped. Removing boundary-loop filling should make these literal
+// topology and triangle-count expectations fail.
+const tetraWithMissingFace = meshFromTriangles(base.slice(0, 3));
+const missingFaceAnalysis = analyzeMeshForSafeRepair(tetraWithMissingFace);
+assert.equal(missingFaceAnalysis.report.boundaryEdges.count, 3);
+assert.equal(missingFaceAnalysis.plan.fillBoundaryTriangles.length, 1);
+const closedTetra = applySafeMeshRepair(tetraWithMissingFace, missingFaceAnalysis.plan);
+assert.equal(closedTetra.addedTriangles, 1);
+assert.equal(closedTetra.filledBoundaryLoops, 1);
+assert.equal(closedTetra.mesh.triangleCount, 4);
+assert.equal(analyzeMesh(closedTetra.mesh).boundaryEdges.count, 0);
+assert.equal(
+  analyzeMeshForSafeRepair(closedTetra.mesh).plan.fillBoundaryTriangles.length,
+  0,
+  "a closed patch is idempotent and must not be filled again",
+);
+
+// A lone open sheet is ambiguous, not a safely repairable solid shell. It must
+// remain untouched instead of being doubled into two coincident faces.
+const openSheet = meshFromTriangles([base[0]]);
+const openSheetPlan = analyzeMeshForSafeRepair(openSheet).plan;
+assert.deepEqual(openSheetPlan.fillBoundaryTriangles, []);
+assert.equal(applySafeMeshRepair(openSheet, openSheetPlan).mesh.triangleCount, 1);
+
+// A non-planar four-edge boundary is ambiguous: a flat cap would alter the
+// source shape, so the safe plan must leave it highlighted and unresolved.
+const nonPlanarBoundary = meshFromTriangles([
+  [[0, 0, 0], [1, 0, 0], [0.5, 0.5, 1]],
+  [[1, 0, 0], [1, 1, 0.2], [0.5, 0.5, 1]],
+  [[1, 1, 0.2], [0, 1, 0], [0.5, 0.5, 1]],
+  [[0, 1, 0], [0, 0, 0], [0.5, 0.5, 1]],
+]);
+const nonPlanarPlan = analyzeMeshForSafeRepair(nonPlanarBoundary).plan;
+assert.deepEqual(nonPlanarPlan.fillBoundaryTriangles, []);
+assert.equal(analyzeMesh(applySafeMeshRepair(nonPlanarBoundary, nonPlanarPlan).mesh).boundaryEdges.count, 4);
+
+// Concave planar holes need contour triangulation, not a centroid fan that can
+// spill outside the L-shaped opening.
+const bottom: V3[] = [[0, 0, 0], [2, 0, 0], [2, 1, 0], [1, 1, 0], [1, 2, 0], [0, 2, 0]];
+const top = bottom.map(([x, y]) => [x, y, 1] as V3);
+const concaveOpenPrism: Tri[] = [
+  [bottom[0], bottom[3], bottom[1]],
+  [bottom[1], bottom[3], bottom[2]],
+  [bottom[0], bottom[5], bottom[3]],
+  [bottom[3], bottom[5], bottom[4]],
+];
+for (let index = 0; index < bottom.length; index++) {
+  const next = (index + 1) % bottom.length;
+  concaveOpenPrism.push(
+    [bottom[index], bottom[next], top[next]],
+    [bottom[index], top[next], top[index]],
+  );
+}
+const concaveMesh = meshFromTriangles(concaveOpenPrism);
+const concavePlan = analyzeMeshForSafeRepair(concaveMesh).plan;
+assert.equal(concavePlan.fillBoundaryTriangles.length, 4);
+const closedConcaveMesh = applySafeMeshRepair(concaveMesh, concavePlan).mesh;
+const closedConcaveReport = analyzeMesh(closedConcaveMesh);
+assert.equal(closedConcaveReport.boundaryEdges.count, 0);
+assert.equal(closedConcaveReport.inconsistentWinding.count, 0);
+
 const repeat = applySafeMeshRepair(broken, planSafeMeshRepair(broken, analyzeMesh(broken)));
 assert.deepEqual([...repeat.mesh.positions], [...repaired.mesh.positions]);
 assert.deepEqual([...repeat.mesh.normals], [...repaired.mesh.normals]);
