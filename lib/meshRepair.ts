@@ -274,13 +274,38 @@ export function analyzeMesh(
   };
 }
 
+export function limitMeshRepairReportSamples(
+  report: MeshRepairReport,
+  maxSamplesPerKind: number,
+): MeshRepairReport {
+  const limit = Math.max(0, Math.floor(maxSamplesPerKind));
+  const limited = (group: MeshIssueGroup): MeshIssueGroup => ({
+    count: group.count,
+    samples: group.samples.slice(0, limit),
+  });
+  return {
+    ...report,
+    degenerateTriangles: limited(report.degenerateTriangles),
+    duplicateFaces: limited(report.duplicateFaces),
+    boundaryEdges: limited(report.boundaryEdges),
+    nonManifoldEdges: limited(report.nonManifoldEdges),
+    inconsistentWinding: limited(report.inconsistentWinding),
+    tinyShells: limited(report.tinyShells),
+  };
+}
+
 export function planSafeMeshRepair(mesh: StlMesh, report: MeshRepairReport): MeshRepairPlan {
   if (report.triangleCount !== mesh.triangleCount) {
     throw new Error("Report opravy neodpovídá aktuálnímu modelu.");
   }
 
   // Dry-run potřebuje úplné indexy, zatímco běžný UI report smí mít omezené vzorky.
-  const fullReport = analyzeMesh(mesh, { maxSamplesPerKind: mesh.triangleCount * 3 });
+  const removalSamplesAreComplete =
+    report.degenerateTriangles.samples.length === report.degenerateTriangles.count
+    && report.duplicateFaces.samples.length === report.duplicateFaces.count;
+  const fullReport = removalSamplesAreComplete
+    ? report
+    : analyzeMesh(mesh, { maxSamplesPerKind: mesh.triangleCount * 3 });
   const removeDegenerateTriangles = fullReport.degenerateTriangles.samples
     .map((sample) => sample.triangleIndices[0])
     .sort((a, b) => a - b);

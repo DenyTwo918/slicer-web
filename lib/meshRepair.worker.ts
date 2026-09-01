@@ -1,5 +1,6 @@
 import {
   analyzeMesh,
+  limitMeshRepairReportSamples,
   planSafeMeshRepair,
   type MeshRepairPlan,
   type MeshRepairReport,
@@ -31,14 +32,15 @@ const ctx = self as unknown as {
 ctx.onmessage = (event) => {
   const { requestId, modelId, revision, mesh } = event.data;
   try {
-    const report = analyzeMesh(mesh);
+    const fullReport = analyzeMesh(mesh, { maxSamplesPerKind: mesh.triangleCount * 3 });
+    const plan = planSafeMeshRepair(mesh, fullReport);
     ctx.postMessage({
       requestId,
       modelId,
       revision,
       ok: true,
-      report,
-      plan: planSafeMeshRepair(mesh, report),
+      report: limitMeshRepairReportSamples(fullReport, 100),
+      plan,
     });
   } catch (error) {
     ctx.postMessage({

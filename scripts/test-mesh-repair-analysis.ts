@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { analyzeMesh } from "../lib/meshRepair";
+import { analyzeMesh, limitMeshRepairReportSamples } from "../lib/meshRepair";
 import { parseAsciiStl, type StlMesh } from "../lib/stl";
 
 type V3 = [number, number, number];
@@ -83,5 +83,10 @@ assert.deepEqual(tinyShellReport.tinyShells.samples[0].triangleIndices, [4]);
 
 const deterministic = analyzeMesh(valid);
 assert.deepEqual(deterministic, validReport);
+
+const limited = limitMeshRepairReportSamples(openReport, 1);
+assert.equal(limited.boundaryEdges.count, openReport.boundaryEdges.count);
+assert.equal(limited.boundaryEdges.samples.length, 1);
+assert.equal(openReport.boundaryEdges.samples.length, 3, "sample limiting does not mutate full report");
 
 console.log("[OK] mesh diagnostics classify defects deterministically");
