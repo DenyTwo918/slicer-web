@@ -25,6 +25,8 @@ import {
   viewportMeshPlacement,
 } from "@/lib/previewCoordinates";
 import { buildViewportModelGeometry } from "@/lib/viewportGeometry";
+import { buildMeshRepairOverlay } from "@/lib/meshRepairOverlay";
+import type { MeshIssueSample } from "@/lib/meshRepair";
 
 interface ViewModel {
   id: number;
@@ -565,6 +567,46 @@ function FrameVat({ printer }: { printer: PrinterProfile }) {
   return null;
 }
 
+function MeshDiagnosticOverlay({
+  mesh,
+  sample,
+  geometryOffset,
+}: {
+  mesh: StlMesh;
+  sample: MeshIssueSample;
+  geometryOffset: { x: number; y: number };
+}) {
+  const geometry = useMemo(
+    () => buildMeshRepairOverlay(mesh, sample, geometryOffset),
+    [mesh, sample, geometryOffset.x, geometryOffset.y],
+  );
+  useEffect(() => () => {
+    geometry.triangles?.dispose();
+    geometry.edges?.dispose();
+  }, [geometry]);
+
+  return (
+    <>
+      {geometry.triangles && (
+        <mesh geometry={geometry.triangles} renderOrder={20}>
+          <meshBasicMaterial
+            color="#ff3344"
+            transparent
+            opacity={0.72}
+            depthTest={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      )}
+      {geometry.edges && (
+        <lineSegments geometry={geometry.edges} renderOrder={21}>
+          <lineBasicMaterial color="#ff1738" depthTest={false} />
+        </lineSegments>
+      )}
+    </>
+  );
+}
+
 export default function Viewport({
   models,
   selectedId,
@@ -574,6 +616,7 @@ export default function Viewport({
   layerPreview,
   gizmoMode = "translate",
   supportPreview,
+  meshDiagnostic,
 }: {
   models: ViewModel[];
   selectedId: number | null;
@@ -583,6 +626,7 @@ export default function Viewport({
   layerPreview?: LayerPreviewData | null;
   gizmoMode?: "translate" | "rotate" | "scale";
   supportPreview?: SupportPreviewData | null;
+  meshDiagnostic?: { modelId: number; sample: MeshIssueSample } | null;
 }) {
   const gizmoRef = useRef<THREE.Group>(null);
   const orbitRef = useRef<any>(null);
@@ -687,6 +731,13 @@ export default function Viewport({
                 clipPlane={clipPlane}
                 geometryOffset={{ x: placement.geometryX, y: placement.geometryY }}
               />
+              {!layerPreview && meshDiagnostic?.modelId === m.id && (
+                <MeshDiagnosticOverlay
+                  mesh={m.mesh}
+                  sample={meshDiagnostic.sample}
+                  geometryOffset={{ x: placement.geometryX, y: placement.geometryY }}
+                />
+              )}
             </group>
           </group>
         );

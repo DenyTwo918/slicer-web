@@ -14,6 +14,8 @@ export interface MeshIssueSample {
   triangleIndices: number[];
   /** Kompaktní svařené vertex ID z topologie. */
   edgeVertices?: [number, number];
+  /** Skutečné souřadnice hrany pro levný viewport overlay bez nové topologické analýzy. */
+  edgePoints?: [[number, number, number], [number, number, number]];
 }
 
 export interface MeshIssueGroup {
@@ -58,6 +60,21 @@ export interface MeshRepairResult {
 
 function makeGroup(samples: MeshIssueSample[], totalCount: number): MeshIssueGroup {
   return { count: totalCount, samples };
+}
+
+function edgePoints(
+  representativePositions: Float32Array,
+  vertices: [number, number],
+): [[number, number, number], [number, number, number]] {
+  const point = (vertex: number): [number, number, number] => {
+    const offset = vertex * 3;
+    return [
+      representativePositions[offset],
+      representativePositions[offset + 1],
+      representativePositions[offset + 2],
+    ];
+  };
+  return [point(vertices[0]), point(vertices[1])];
 }
 
 function triangleArea(mesh: StlMesh, triangleIndex: number): number {
@@ -168,6 +185,7 @@ export function analyzeMesh(
           kind: "boundary-edge",
           triangleIndices: [uses[0].triangleIndex],
           edgeVertices: edge.vertices,
+          edgePoints: edgePoints(topology.representativePositions, edge.vertices),
         });
       }
     } else if (uses.length > 2) {
@@ -177,6 +195,7 @@ export function analyzeMesh(
           kind: "non-manifold-edge",
           triangleIndices: uses.map((use) => use.triangleIndex).sort((a, b) => a - b),
           edgeVertices: edge.vertices,
+          edgePoints: edgePoints(topology.representativePositions, edge.vertices),
         });
       }
     }
@@ -191,6 +210,7 @@ export function analyzeMesh(
             kind: "inconsistent-winding",
             triangleIndices: [first.triangleIndex, second.triangleIndex].sort((a, b) => a - b),
             edgeVertices: edge.vertices,
+            edgePoints: edgePoints(topology.representativePositions, edge.vertices),
           });
         }
       }

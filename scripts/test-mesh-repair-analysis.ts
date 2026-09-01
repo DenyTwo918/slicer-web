@@ -37,6 +37,7 @@ assert.deepEqual([...valid.positions], validBefore, "analysis never mutates inpu
 const openReport = analyzeMesh(meshFromTriangles(tetra([0, 0, 0]).slice(0, 3)));
 assert.equal(openReport.boundaryEdges.count, 3);
 assert.equal(openReport.nonManifoldEdges.count, 0);
+assert.equal(openReport.boundaryEdges.samples[0].edgePoints?.length, 2);
 
 const nonManifoldReport = analyzeMesh(meshFromTriangles([
   [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
