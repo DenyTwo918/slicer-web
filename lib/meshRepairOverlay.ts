@@ -5,6 +5,14 @@ import type { StlMesh } from "./stl";
 export interface MeshRepairOverlayGeometry {
   triangles: THREE.BufferGeometry | null;
   edges: THREE.BufferGeometry | null;
+  markers: THREE.BufferGeometry | null;
+}
+
+function geometryFromPositions(positions: Float32Array): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.computeBoundingSphere();
+  return geometry;
 }
 
 const EDGE_KINDS = new Set([
@@ -37,10 +45,11 @@ export function buildMeshRepairOverlay(
       ...sample.edgePoints[1],
     ]);
     translatePositions(positions, mesh, geometryOffset);
-    const edges = new THREE.BufferGeometry();
-    edges.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    edges.computeBoundingSphere();
-    return { triangles: null, edges };
+    return {
+      triangles: null,
+      edges: geometryFromPositions(positions),
+      markers: geometryFromPositions(positions.slice()),
+    };
   }
 
   const positions = new Float32Array(sample.triangleIndices.length * 9);
@@ -52,9 +61,35 @@ export function buildMeshRepairOverlay(
     positions.set(mesh.positions.subarray(sourceOffset, sourceOffset + 9), outputIndex * 9);
   });
   translatePositions(positions, mesh, geometryOffset);
+
+  if (sample.kind === "degenerate-triangle") {
+    const edgePositions = new Float32Array(sample.triangleIndices.length * 18);
+    const markerPositions = new Float32Array(sample.triangleIndices.length * 3);
+    for (let triangle = 0; triangle < sample.triangleIndices.length; triangle++) {
+      const base = triangle * 9;
+      const edgeBase = triangle * 18;
+      edgePositions.set(positions.subarray(base, base + 6), edgeBase);
+      edgePositions.set(positions.subarray(base + 3, base + 9), edgeBase + 6);
+      edgePositions.set(positions.subarray(base + 6, base + 9), edgeBase + 12);
+      edgePositions.set(positions.subarray(base, base + 3), edgeBase + 15);
+      for (let axis = 0; axis < 3; axis++) {
+        markerPositions[triangle * 3 + axis] = (
+          positions[base + axis]
+          + positions[base + 3 + axis]
+          + positions[base + 6 + axis]
+        ) / 3;
+      }
+    }
+    return {
+      triangles: null,
+      edges: geometryFromPositions(edgePositions),
+      markers: geometryFromPositions(markerPositions),
+    };
+  }
+
   const triangles = new THREE.BufferGeometry();
   triangles.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   triangles.computeVertexNormals();
   triangles.computeBoundingSphere();
-  return { triangles, edges: null };
+  return { triangles, edges: null, markers: null };
 }

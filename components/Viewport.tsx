@@ -584,6 +584,7 @@ function MeshDiagnosticOverlay({
   useEffect(() => () => {
     geometry.triangles?.dispose();
     geometry.edges?.dispose();
+    geometry.markers?.dispose();
   }, [geometry]);
 
   return (
@@ -603,6 +604,16 @@ function MeshDiagnosticOverlay({
         <lineSegments geometry={geometry.edges} renderOrder={21}>
           <lineBasicMaterial color="#ff1738" depthTest={false} />
         </lineSegments>
+      )}
+      {geometry.markers && (
+        <points geometry={geometry.markers} renderOrder={22}>
+          <pointsMaterial
+            color="#ff002b"
+            size={10}
+            sizeAttenuation={false}
+            depthTest={false}
+          />
+        </points>
       )}
     </>
   );

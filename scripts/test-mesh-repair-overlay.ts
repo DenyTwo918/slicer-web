@@ -22,11 +22,12 @@ const triangleSample: MeshIssueSample = {
   triangleIndices: [0],
 };
 const triangleOverlay = buildMeshRepairOverlay(mesh, triangleSample, { x: 10, y: -2 });
-assert.ok(triangleOverlay.triangles);
-assert.equal(triangleOverlay.edges, null);
+assert.equal(triangleOverlay.triangles, null, "a zero-area finding cannot be highlighted as a filled face");
+assert.ok(triangleOverlay.edges, "degenerate triangle sides stay visible as red lines");
+assert.ok(triangleOverlay.markers, "degenerate triangles get a fixed-size visible marker");
 assert.deepEqual(
-  [...triangleOverlay.triangles!.getAttribute("position").array],
-  [11, 0, 0, 14, 0, 0, 11, 3, 0],
+  [...triangleOverlay.markers!.getAttribute("position").array],
+  [12, 1, 0],
 );
 assert.deepEqual([...mesh.positions], before, "overlay builder never mutates mesh positions");
 
@@ -39,6 +40,7 @@ const edgeSample: MeshIssueSample = {
 const edgeOverlay = buildMeshRepairOverlay(mesh, edgeSample, { x: 10, y: -2 });
 assert.equal(edgeOverlay.triangles, null);
 assert.ok(edgeOverlay.edges);
+assert.ok(edgeOverlay.markers, "boundary edges get visible endpoint markers");
 assert.deepEqual(
   [...edgeOverlay.edges!.getAttribute("position").array],
   [11, 0, 0, 14, 0, 0],
@@ -49,6 +51,8 @@ assert.throws(
   /index/i,
 );
 
-triangleOverlay.triangles?.dispose();
+triangleOverlay.edges?.dispose();
+triangleOverlay.markers?.dispose();
 edgeOverlay.edges?.dispose();
+edgeOverlay.markers?.dispose();
 console.log("[OK] mesh repair overlays are exact, disposable, and immutable");
