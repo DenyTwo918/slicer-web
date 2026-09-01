@@ -39,6 +39,17 @@ assert.equal(openReport.boundaryEdges.count, 3);
 assert.equal(openReport.nonManifoldEdges.count, 0);
 assert.equal(openReport.boundaryEdges.samples[0].edgePoints?.length, 2);
 
+// A closed boundary whose vertices are collinear encloses exactly zero area.
+// It is a harmless STL seam, not a printable hole, and must not keep the model
+// in a warning state. A real missing tetrahedron face above remains reported.
+const zeroAreaBoundaryReport = analyzeMesh(meshFromTriangles([
+  [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+  [[1, 0, 0], [2, 0, 0], [0, 1, 0]],
+  [[2, 0, 0], [0, 0, 0], [0, 1, 0]],
+]));
+assert.equal(zeroAreaBoundaryReport.boundaryEdges.count, 0);
+assert.equal(zeroAreaBoundaryReport.boundaryEdges.samples.length, 0);
+
 const nonManifoldReport = analyzeMesh(meshFromTriangles([
   [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
   [[1, 0, 0], [0, 0, 0], [0, -1, 0]],

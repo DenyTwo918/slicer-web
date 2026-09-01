@@ -1,5 +1,10 @@
 import type { StlMesh } from "./stl";
-import { buildMeshTopology, DEFAULT_WELD_TOLERANCE_MM } from "./meshTopology";
+import {
+  buildMeshTopology,
+  DEFAULT_WELD_TOLERANCE_MM,
+  type MeshTopology,
+  type TopologyEdge,
+} from "./meshTopology";
 import { planSafeBoundaryFill, type MeshPatchTriangle } from "./meshHoleRepair";
 
 export type MeshIssueKind =
@@ -88,6 +93,90 @@ function edgePoints(
     ];
   };
   return [point(vertices[0]), point(vertices[1])];
+}
+
+function collinearClosedBoundaryEdges(
+  topology: MeshTopology,
+  retained: (triangle: number) => boolean,
+  toleranceMm: number,
+): Set<TopologyEdge> {
+  const boundaryEdges = topology.edges.filter((edge) =>
+    edge.uses.filter((use) => retained(use.triangleIndex)).length === 1
+  );
+  const edgesByVertex = new Map<number, TopologyEdge[]>();
+  for (const edge of boundaryEdges) {
+    for (const vertex of edge.vertices) {
+      const connected = edgesByVertex.get(vertex);
+      if (connected) connected.push(edge);
+      else edgesByVertex.set(vertex, [edge]);
+    }
+  }
+
+  const ignored = new Set<TopologyEdge>();
+  const visited = new Set<TopologyEdge>();
+  for (const firstEdge of boundaryEdges) {
+    if (visited.has(firstEdge)) continue;
+    const componentEdges: TopologyEdge[] = [];
+    const componentVertices = new Set<number>();
+    const queue = [firstEdge];
+    visited.add(firstEdge);
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const edge = queue[cursor];
+      componentEdges.push(edge);
+      for (const vertex of edge.vertices) {
+        componentVertices.add(vertex);
+        for (const connected of edgesByVertex.get(vertex) ?? []) {
+          if (visited.has(connected)) continue;
+          visited.add(connected);
+          queue.push(connected);
+        }
+      }
+    }
+
+    // Open chains, branches and touching loops remain real diagnostics.
+    if ([...componentVertices].some((vertex) => edgesByVertex.get(vertex)?.length !== 2)) continue;
+    if (componentEdges.length !== componentVertices.size || componentVertices.size < 3) continue;
+
+    const vertices = [...componentVertices];
+    const origin = vertices[0];
+    const originOffset = origin * 3;
+    let farthest = origin;
+    let farthestDistanceSquared = 0;
+    for (const vertex of vertices.slice(1)) {
+      const offset = vertex * 3;
+      const dx = topology.representativePositions[offset] - topology.representativePositions[originOffset];
+      const dy = topology.representativePositions[offset + 1] - topology.representativePositions[originOffset + 1];
+      const dz = topology.representativePositions[offset + 2] - topology.representativePositions[originOffset + 2];
+      const distanceSquared = dx * dx + dy * dy + dz * dz;
+      if (distanceSquared > farthestDistanceSquared) {
+        farthestDistanceSquared = distanceSquared;
+        farthest = vertex;
+      }
+    }
+    if (farthestDistanceSquared <= toleranceMm * toleranceMm) continue;
+
+    const farthestOffset = farthest * 3;
+    const direction = [
+      topology.representativePositions[farthestOffset] - topology.representativePositions[originOffset],
+      topology.representativePositions[farthestOffset + 1] - topology.representativePositions[originOffset + 1],
+      topology.representativePositions[farthestOffset + 2] - topology.representativePositions[originOffset + 2],
+    ];
+    const lineLength = Math.sqrt(farthestDistanceSquared);
+    const isCollinear = vertices.every((vertex) => {
+      const offset = vertex * 3;
+      const relative = [
+        topology.representativePositions[offset] - topology.representativePositions[originOffset],
+        topology.representativePositions[offset + 1] - topology.representativePositions[originOffset + 1],
+        topology.representativePositions[offset + 2] - topology.representativePositions[originOffset + 2],
+      ];
+      const crossX = relative[1] * direction[2] - relative[2] * direction[1];
+      const crossY = relative[2] * direction[0] - relative[0] * direction[2];
+      const crossZ = relative[0] * direction[1] - relative[1] * direction[0];
+      return Math.hypot(crossX, crossY, crossZ) / lineLength <= toleranceMm;
+    });
+    if (isCollinear) componentEdges.forEach((edge) => ignored.add(edge));
+  }
+  return ignored;
 }
 
 function triangleArea(mesh: StlMesh, triangleIndex: number): number {
@@ -236,6 +325,7 @@ function analyzeMeshDetailed(
   }
 
   const retained = (triangle: number) => !degenerate[triangle] && !duplicate[triangle];
+  const ignoredBoundaryEdges = collinearClosedBoundaryEdges(topology, retained, weldTolerance);
   const boundarySamples: MeshIssueSample[] = [];
   const nonManifoldSamples: MeshIssueSample[] = [];
   const windingSamples: MeshIssueSample[] = [];
@@ -248,6 +338,7 @@ function analyzeMeshDetailed(
     const uses = edge.uses.filter((use) => retained(use.triangleIndex));
     if (uses.length === 0) continue;
     if (uses.length === 1) {
+      if (ignoredBoundaryEdges.has(edge)) continue;
       boundaryCount++;
       if (boundarySamples.length < maxSamples) {
         boundarySamples.push({
