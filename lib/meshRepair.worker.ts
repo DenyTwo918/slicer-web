@@ -1,4 +1,9 @@
-import { analyzeMesh, type MeshRepairReport } from "./meshRepair";
+import {
+  analyzeMesh,
+  planSafeMeshRepair,
+  type MeshRepairPlan,
+  type MeshRepairReport,
+} from "./meshRepair";
 import type { StlMesh } from "./stl";
 
 export interface MeshRepairWorkerRequest {
@@ -14,6 +19,7 @@ export interface MeshRepairWorkerResponse {
   revision: number;
   ok: boolean;
   report?: MeshRepairReport;
+  plan?: MeshRepairPlan;
   error?: string;
 }
 
@@ -25,12 +31,14 @@ const ctx = self as unknown as {
 ctx.onmessage = (event) => {
   const { requestId, modelId, revision, mesh } = event.data;
   try {
+    const report = analyzeMesh(mesh);
     ctx.postMessage({
       requestId,
       modelId,
       revision,
       ok: true,
-      report: analyzeMesh(mesh),
+      report,
+      plan: planSafeMeshRepair(mesh, report),
     });
   } catch (error) {
     ctx.postMessage({

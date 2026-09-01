@@ -6,6 +6,19 @@ import { parseStl, type StlMesh } from "@/lib/stl";
 import { parseObj } from "@/lib/obj";
 import { extractMeshTriangles, splitConnectedShells } from "@/lib/meshSplit";
 import {
+  applySafeMeshRepair,
+  type MeshIssueGroup,
+  type MeshRepairPlan,
+  type MeshRepairReport,
+} from "@/lib/meshRepair";
+import {
+  applyRepairToModelState,
+  restoreRepairBackup,
+  type RepairableModel,
+} from "@/lib/meshRepairModelState";
+import { createMeshRepairGeneration } from "@/lib/meshRepairGeneration";
+import type { MeshRepairWorkerResponse } from "@/lib/meshRepair.worker";
+import {
   findBestOrientation,
   meshStats,
   rotateMesh as orientRotate,
@@ -51,13 +64,41 @@ import {
   DEFAULT_FILM_ID,
 } from "@/lib/profiles";
 
-interface ModelItem {
+interface ModelItem extends RepairableModel<ModelTransform> {
   id: number;
   name: string;
   mesh: StlMesh; // aktuální data (rotace/scale aplikované)
   original: StlMesh;
   transform: ModelTransform; // pozice na desce
 }
+
+type MeshIssueGroupKey =
+  | "degenerateTriangles"
+  | "duplicateFaces"
+  | "boundaryEdges"
+  | "nonManifoldEdges"
+  | "inconsistentWinding"
+  | "tinyShells";
+
+interface MeshAnalysisEntry {
+  status: "loading" | "ready" | "error";
+  report?: MeshRepairReport;
+  plan?: MeshRepairPlan;
+  error?: string;
+}
+
+const MESH_ISSUE_ROWS: Array<{
+  key: MeshIssueGroupKey;
+  label: string;
+  repairable: boolean;
+}> = [
+  { key: "degenerateTriangles", label: "Degenerované plochy", repairable: true },
+  { key: "duplicateFaces", label: "Duplicitní plochy", repairable: true },
+  { key: "inconsistentWinding", label: "Obrácená orientace", repairable: true },
+  { key: "boundaryEdges", label: "Otevřené hrany", repairable: false },
+  { key: "nonManifoldEdges", label: "Non-manifold hrany", repairable: false },
+  { key: "tinyShells", label: "Podezřele malé části", repairable: false },
+];
 
 interface SliceSettings {
   layerHeight: number;
@@ -195,6 +236,12 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [openSec, setOpenSec] = useState<string>("model");
   const [gizmoMode, setGizmoMode] = useState<"translate" | "rotate" | "scale">("translate");
+  const [meshAnalysisByModel, setMeshAnalysisByModel] = useState<Record<number, MeshAnalysisEntry>>({});
+  const [activeMeshIssue, setActiveMeshIssue] = useState<{
+    modelId: number;
+    group: MeshIssueGroupKey;
+    sampleIndex: number;
+  } | null>(null);
 
   const [toast, setToast] = useState<{ type: string; text: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -205,6 +252,9 @@ export default function Home() {
   const sliceWorkerRef = useRef<Worker | null>(null);
   const sliceSeqRef = useRef(0);
   const sliceGenerationRef = useRef(createSliceGeneration());
+  const meshRepairWorkerRef = useRef<Worker | null>(null);
+  const meshRepairGenerationRef = useRef(createMeshRepairGeneration());
+  const analyzedMeshRef = useRef(new Map<number, StlMesh>());
 
   /** Central invalidation also makes every in-flight slice/export response stale. */
   const invalidateSlice = useCallback(() => {
@@ -232,6 +282,8 @@ export default function Home() {
     sliceGenerationRef.current.invalidate();
     sliceWorkerRef.current?.terminate();
     sliceWorkerRef.current = null;
+    meshRepairGenerationRef.current.clear();
+    analyzedMeshRef.current.clear();
   }, []);
 
   const showToast = (type: "ok" | "err", text: string, ms = 6000) => {
@@ -239,6 +291,62 @@ export default function Home() {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), ms);
   };
+
+  useEffect(() => {
+    const worker = new Worker(new URL("../lib/meshRepair.worker.ts", import.meta.url));
+    meshRepairWorkerRef.current = worker;
+    worker.onmessage = (event: MessageEvent<MeshRepairWorkerResponse>) => {
+      const response = event.data;
+      if (!meshRepairGenerationRef.current.isCurrent(response)) return;
+      setMeshAnalysisByModel((previous) => ({
+        ...previous,
+        [response.modelId]: response.ok && response.report && response.plan
+          ? { status: "ready", report: response.report, plan: response.plan }
+          : { status: "error", error: response.error ?? "Analýza modelu selhala." },
+      }));
+    };
+    worker.onerror = () => {
+      setMeshAnalysisByModel((previous) => Object.fromEntries(
+        Object.entries(previous).map(([id, entry]) => [
+          id,
+          entry.status === "loading"
+            ? { status: "error", error: "Worker kontroly modelu selhal." }
+            : entry,
+        ]),
+      ));
+    };
+    return () => {
+      worker.terminate();
+      if (meshRepairWorkerRef.current === worker) meshRepairWorkerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const worker = meshRepairWorkerRef.current;
+    if (!worker) return;
+    const liveIds = new Set(models.map((model) => model.id));
+
+    for (const id of analyzedMeshRef.current.keys()) {
+      if (liveIds.has(id)) continue;
+      analyzedMeshRef.current.delete(id);
+      meshRepairGenerationRef.current.remove(id);
+    }
+    setMeshAnalysisByModel((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([id]) => liveIds.has(Number(id))),
+    ));
+    setActiveMeshIssue((active) => active && liveIds.has(active.modelId) ? active : null);
+
+    for (const model of models) {
+      if (analyzedMeshRef.current.get(model.id) === model.mesh) continue;
+      analyzedMeshRef.current.set(model.id, model.mesh);
+      const token = meshRepairGenerationRef.current.next(model.id);
+      setMeshAnalysisByModel((previous) => ({
+        ...previous,
+        [model.id]: { status: "loading" },
+      }));
+      worker.postMessage({ ...token, mesh: model.mesh });
+    }
+  }, [models]);
 
   const addModel = useCallback((mesh: StlMesh, name: string) => {
     // postavit na desku (minZ = 0)
@@ -392,6 +500,24 @@ export default function Home() {
   );
 
   const selected = models.find((m) => m.id === selectedId) ?? null;
+  const selectedAnalysis = selectedId === null ? undefined : meshAnalysisByModel[selectedId];
+  const selectedReport = selectedAnalysis?.status === "ready" ? selectedAnalysis.report : undefined;
+  const selectedRepairPlan = selectedAnalysis?.status === "ready" ? selectedAnalysis.plan : undefined;
+  const selectedIssueCount = selectedReport
+    ? MESH_ISSUE_ROWS.reduce((sum, row) => sum + selectedReport[row.key].count, 0)
+    : 0;
+  const selectedRepairChangeCount = selectedRepairPlan
+    ? selectedRepairPlan.removeDegenerateTriangles.length
+      + selectedRepairPlan.removeDuplicateTriangles.length
+      + selectedRepairPlan.flipTriangles.length
+    : 0;
+  const activeMeshDiagnostic = useMemo(() => {
+    if (!activeMeshIssue || activeMeshIssue.modelId !== selectedId) return null;
+    const entry = meshAnalysisByModel[activeMeshIssue.modelId];
+    const group = entry?.report?.[activeMeshIssue.group] as MeshIssueGroup | undefined;
+    const sample = group?.samples[activeMeshIssue.sampleIndex];
+    return sample ? { modelId: activeMeshIssue.modelId, sample } : null;
+  }, [activeMeshIssue, meshAnalysisByModel, selectedId]);
 
   const updateModel = useCallback((id: number, fn: (m: ModelItem) => ModelItem) => {
     setModels((prev) => {
@@ -401,6 +527,46 @@ export default function Home() {
     });
     invalidateSlice();
   }, [invalidateSlice]);
+
+  const selectMeshIssue = useCallback((group: MeshIssueGroupKey) => {
+    if (selectedId === null) return;
+    const issueGroup = meshAnalysisByModel[selectedId]?.report?.[group] as MeshIssueGroup | undefined;
+    if (!issueGroup?.samples.length) return;
+    setActiveMeshIssue({ modelId: selectedId, group, sampleIndex: 0 });
+  }, [selectedId, meshAnalysisByModel]);
+
+  const cycleMeshIssue = useCallback((direction: -1 | 1) => {
+    setActiveMeshIssue((active) => {
+      if (!active) return null;
+      const group = meshAnalysisByModel[active.modelId]?.report?.[active.group] as MeshIssueGroup | undefined;
+      if (!group?.samples.length) return null;
+      const sampleIndex = (active.sampleIndex + direction + group.samples.length) % group.samples.length;
+      return { ...active, sampleIndex };
+    });
+  }, [meshAnalysisByModel]);
+
+  const repairSelectedMesh = useCallback(() => {
+    if (selectedId === null || !selected || !selectedRepairPlan) return;
+    const plannedChanges = selectedRepairPlan.removeDegenerateTriangles.length
+      + selectedRepairPlan.removeDuplicateTriangles.length
+      + selectedRepairPlan.flipTriangles.length;
+    if (plannedChanges === 0) {
+      showToast("ok", "Model nemá bezpečně opravitelné vady.");
+      return;
+    }
+    try {
+      const result = applySafeMeshRepair(selected.mesh, selectedRepairPlan);
+      updateModel(selectedId, (model) => applyRepairToModelState(model, result));
+      setActiveMeshIssue(null);
+      showToast(
+        "ok",
+        `Opraveno ✓ · odstraněno ${result.removedDegenerate} degenerovaných + ${result.removedDuplicates} duplicitních · otočeno ${result.flippedTriangles}`,
+        9000,
+      );
+    } catch (error) {
+      showToast("err", error instanceof Error ? error.message : "Bezpečná oprava selhala.", 9000);
+    }
+  }, [selectedId, selected, selectedRepairPlan, updateModel]);
 
   const onMove = useCallback(
     (id: number, x: number, y: number) => {
@@ -435,11 +601,13 @@ export default function Home() {
 
   const resetSel = useCallback(() => {
     if (!selectedId) return;
-    updateModel(selectedId, (m) => ({
-      ...m,
-      mesh: m.original,
-      transform: { ...DEFAULT_TRANSFORM },
-    }));
+    updateModel(selectedId, (m) => m.repairBackup
+      ? restoreRepairBackup(m)
+      : {
+          ...m,
+          mesh: m.original,
+          transform: { ...DEFAULT_TRANSFORM },
+        });
   }, [selectedId, updateModel]);
 
   const orientSel = useCallback(() => {
@@ -526,6 +694,7 @@ export default function Home() {
         ? extractMeshTriangles(item.original, shell.triangleIndices)
         : shell.mesh,
       transform: { ...item.transform },
+      repairBackup: undefined,
     }));
 
     setModels((previous) => {
@@ -1288,6 +1457,7 @@ const doSlice = useCallback(async () => {
             layerPreview={layerPreview}
             gizmoMode={gizmoMode}
             supportPreview={supportPreview}
+            meshDiagnostic={activeMeshDiagnostic}
           />
         </div>
 
@@ -1360,6 +1530,80 @@ const doSlice = useCallback(async () => {
                 <button className="mp-btn" onClick={arrangeAll}>Rozmístit</button>
               )}
             </div>
+          </SideSec>
+
+          <SideSec
+            label="Kontrola modelu"
+            open={openSec === "repair"}
+            onToggle={() => setOpenSec(openSec === "repair" ? "" : "repair")}
+          >
+            {!selected && <p className="mp-hint">Vyber model pro automatickou kontrolu.</p>}
+            {selected && selectedAnalysis?.status === "loading" && (
+              <p className="mesh-repair-status">Analyzuji topologii mimo hlavní vlákno…</p>
+            )}
+            {selected && selectedAnalysis?.status === "error" && (
+              <p className="mesh-repair-status bad">⚠ {selectedAnalysis.error}</p>
+            )}
+            {selected && selectedReport && selectedIssueCount === 0 && (
+              <p className="mesh-repair-status good">✓ Bez zjištěných topologických vad</p>
+            )}
+            {selected && selectedReport && selectedIssueCount > 0 && (
+              <>
+                <p className="mesh-repair-status bad">
+                  ⚠ Nalezeno {selectedIssueCount} problémů · {selectedReport.shellCount} částí
+                </p>
+                <div className="mesh-issue-list">
+                  {MESH_ISSUE_ROWS.map((row) => {
+                    const group = selectedReport[row.key];
+                    if (group.count === 0) return null;
+                    const active = activeMeshIssue?.modelId === selected.id
+                      && activeMeshIssue.group === row.key;
+                    return (
+                      <button
+                        key={row.key}
+                        className={`mesh-issue-row ${active ? "active" : ""}`}
+                        onClick={() => selectMeshIssue(row.key)}
+                        title="Zvýraznit nález červeně ve 3D"
+                      >
+                        <span>{row.repairable ? "🔧" : "⚠"} {row.label}</span>
+                        <b>{group.count}</b>
+                      </button>
+                    );
+                  })}
+                </div>
+                {activeMeshIssue?.modelId === selected.id && (
+                  <div className="mesh-issue-nav">
+                    <button className="mp-btn" onClick={() => cycleMeshIssue(-1)}>←</button>
+                    <span>
+                      Nález {activeMeshIssue.sampleIndex + 1} / {
+                        (selectedReport[activeMeshIssue.group] as MeshIssueGroup).samples.length
+                      }
+                    </span>
+                    <button className="mp-btn" onClick={() => cycleMeshIssue(1)}>→</button>
+                    <button className="mp-btn" onClick={() => setActiveMeshIssue(null)}>Skrýt</button>
+                  </div>
+                )}
+                {selectedRepairPlan && (
+                  <div className="mesh-repair-plan">
+                    Bezpečný plán: odstranit {selectedRepairPlan.removeDegenerateTriangles.length} degenerovaných
+                    {" + "}{selectedRepairPlan.removeDuplicateTriangles.length} duplicitních · otočit {selectedRepairPlan.flipTriangles.length} ploch
+                    {selectedRepairPlan.unresolvedWindingComponents > 0
+                      ? ` · ${selectedRepairPlan.unresolvedWindingComponents} konfliktů zůstane označeno`
+                      : ""}
+                  </div>
+                )}
+                <button
+                  className="btn btn-small btn-primary mesh-repair-button"
+                  disabled={selectedRepairChangeCount === 0}
+                  onClick={repairSelectedMesh}
+                >
+                  Bezpečně opravit
+                </button>
+                <p className="mp-hint">
+                  Díry, non-manifold hrany a malé části se pouze označí — automaticky se nemažou ani nezavírají.
+                </p>
+              </>
+            )}
           </SideSec>
 
           <SideSec

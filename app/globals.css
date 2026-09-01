@@ -459,6 +459,71 @@ header {
   align-self: center;
   margin-left: 6px;
 }
+.mesh-repair-status {
+  margin: 2px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--card2);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.mesh-repair-status.good {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+}
+.mesh-repair-status.bad {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--border));
+}
+.mesh-issue-list {
+  display: grid;
+  gap: 5px;
+}
+.mesh-issue-row {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card2);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+}
+.mesh-issue-row:hover,
+.mesh-issue-row.active {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--card2));
+}
+.mesh-issue-row b { color: var(--danger); }
+.mesh-issue-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.mesh-repair-plan {
+  margin-top: 8px;
+  padding: 8px 9px;
+  border-left: 3px solid var(--blue);
+  border-radius: 6px;
+  background: var(--card2);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.mesh-repair-button {
+  width: 100%;
+  margin: 8px 0 6px;
+}
 
 /* ---------- panely ---------- */
 .info-panel {
