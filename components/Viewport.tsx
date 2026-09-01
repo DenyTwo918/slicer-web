@@ -26,6 +26,7 @@ import {
 } from "@/lib/previewCoordinates";
 import { buildViewportModelGeometry } from "@/lib/viewportGeometry";
 import { buildMeshRepairOverlay } from "@/lib/meshRepairOverlay";
+import { shouldShowMeshDiagnosticOverlay } from "@/lib/meshDiagnosticVisibility";
 import type { MeshIssueSample } from "@/lib/meshRepair";
 
 interface ViewModel {
@@ -731,7 +732,11 @@ export default function Viewport({
                 clipPlane={clipPlane}
                 geometryOffset={{ x: placement.geometryX, y: placement.geometryY }}
               />
-              {!layerPreview && meshDiagnostic?.modelId === m.id && (
+              {meshDiagnostic && shouldShowMeshDiagnosticOverlay({
+                modelId: m.id,
+                diagnosticModelId: meshDiagnostic.modelId,
+                layerPreviewActive: Boolean(layerPreview),
+              }) && (
                 <MeshDiagnosticOverlay
                   mesh={m.mesh}
                   sample={meshDiagnostic.sample}
