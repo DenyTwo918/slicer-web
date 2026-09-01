@@ -28,37 +28,6 @@ export interface MeshTopology {
   shells: number[][];
 }
 
-class DisjointSet {
-  private readonly parent: Int32Array;
-  private readonly rank: Uint8Array;
-
-  constructor(size: number) {
-    this.parent = new Int32Array(size);
-    this.rank = new Uint8Array(size);
-    for (let i = 0; i < size; i++) this.parent[i] = i;
-  }
-
-  find(value: number): number {
-    let root = value;
-    while (this.parent[root] !== root) root = this.parent[root];
-    while (this.parent[value] !== value) {
-      const next = this.parent[value];
-      this.parent[value] = root;
-      value = next;
-    }
-    return root;
-  }
-
-  union(a: number, b: number): void {
-    let rootA = this.find(a);
-    let rootB = this.find(b);
-    if (rootA === rootB) return;
-    if (this.rank[rootA] < this.rank[rootB]) [rootA, rootB] = [rootB, rootA];
-    this.parent[rootB] = rootA;
-    if (this.rank[rootA] === this.rank[rootB]) this.rank[rootA]++;
-  }
-}
-
 function edgeKey(a: number, b: number): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
@@ -106,9 +75,23 @@ export function buildMeshTopology(
   }
 
   const uniqueCount = uniqueCoordinates.length / 3;
-  const welded = new DisjointSet(uniqueCount);
+  const clusterByUniqueVertex = new Int32Array(uniqueCount);
+  clusterByUniqueVertex.fill(-1);
+  const clusterMembers: number[][] = [];
   const buckets = new Map<string, number[]>();
   const toleranceSquared = tolerance * tolerance;
+
+  const fitsCluster = (vertex: number, cluster: number): boolean => {
+    const offset = vertex * 3;
+    for (const member of clusterMembers[cluster]) {
+      const memberOffset = member * 3;
+      const diffX = uniqueCoordinates[offset] - uniqueCoordinates[memberOffset];
+      const diffY = uniqueCoordinates[offset + 1] - uniqueCoordinates[memberOffset + 1];
+      const diffZ = uniqueCoordinates[offset + 2] - uniqueCoordinates[memberOffset + 2];
+      if (diffX * diffX + diffY * diffY + diffZ * diffZ > toleranceSquared) return false;
+    }
+    return true;
+  };
 
   for (let vertex = 0; vertex < uniqueCount; vertex++) {
     const offset = vertex * 3;
@@ -119,42 +102,46 @@ export function buildMeshTopology(
     const cellY = Math.floor(y / tolerance);
     const cellZ = Math.floor(z / tolerance);
 
+    let selectedCluster = -1;
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (let dz = -1; dz <= 1; dz++) {
           const candidates = buckets.get(`${cellX + dx},${cellY + dy},${cellZ + dz}`);
           if (!candidates) continue;
-          for (const candidate of candidates) {
-            const candidateOffset = candidate * 3;
-            const diffX = x - uniqueCoordinates[candidateOffset];
-            const diffY = y - uniqueCoordinates[candidateOffset + 1];
-            const diffZ = z - uniqueCoordinates[candidateOffset + 2];
-            if (diffX * diffX + diffY * diffY + diffZ * diffZ <= toleranceSquared) {
-              welded.union(vertex, candidate);
+          for (const cluster of candidates) {
+            if ((selectedCluster === -1 || cluster < selectedCluster) && fitsCluster(vertex, cluster)) {
+              selectedCluster = cluster;
             }
           }
         }
       }
     }
 
-    const ownCell = `${cellX},${cellY},${cellZ}`;
-    const bucket = buckets.get(ownCell);
-    if (bucket) bucket.push(vertex);
-    else buckets.set(ownCell, [vertex]);
+    if (selectedCluster === -1) {
+      selectedCluster = clusterMembers.length;
+      clusterMembers.push([vertex]);
+      const ownCell = `${cellX},${cellY},${cellZ}`;
+      const bucket = buckets.get(ownCell);
+      if (bucket) bucket.push(selectedCluster);
+      else buckets.set(ownCell, [selectedCluster]);
+    } else {
+      clusterMembers[selectedCluster].push(vertex);
+    }
+    clusterByUniqueVertex[vertex] = selectedCluster;
   }
 
-  // Union-find rooty přečíslujeme podle prvního výskytu, aby výstup nezávisel na ranku stromu.
-  const compactByRoot = new Map<number, number>();
+  // Compact IDs follow first occurrence and every cluster has a true <= tolerance diameter.
+  const compactByCluster = new Map<number, number>();
   const representativeCoordinates: number[] = [];
   const weldedVertexByOccurrence = new Int32Array(occurrenceCount);
   for (let occurrence = 0; occurrence < occurrenceCount; occurrence++) {
     const uniqueIndex = uniqueIndexByOccurrence[occurrence];
-    const root = welded.find(uniqueIndex);
-    let compact = compactByRoot.get(root);
+    const cluster = clusterByUniqueVertex[uniqueIndex];
+    let compact = compactByCluster.get(cluster);
     if (compact === undefined) {
-      compact = compactByRoot.size;
-      compactByRoot.set(root, compact);
-      const offset = uniqueIndex * 3;
+      compact = compactByCluster.size;
+      compactByCluster.set(cluster, compact);
+      const offset = clusterMembers[cluster][0] * 3;
       representativeCoordinates.push(
         uniqueCoordinates[offset],
         uniqueCoordinates[offset + 1],

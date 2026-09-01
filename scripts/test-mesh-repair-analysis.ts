@@ -89,4 +89,15 @@ assert.equal(limited.boundaryEdges.count, openReport.boundaryEdges.count);
 assert.equal(limited.boundaryEdges.samples.length, 1);
 assert.equal(openReport.boundaryEdges.samples.length, 3, "sample limiting does not mutate full report");
 
+const bridgedEdges = meshFromTriangles([
+  [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+  [[1.5e-5, 0, 0], [1 + 1.5e-5, 0, 0], [0, -1, 0]],
+  [[0.75e-5, 0, 0], [3, 0, 0], [3, 1, 0]],
+  [[1 + 0.75e-5, 0, 0], [4, 0, 0], [4, 1, 0]],
+]);
+const bridgedReport = analyzeMesh(bridgedEdges);
+assert.equal(bridgedReport.shellCount, 4, "proximity bridges must not join disconnected shells");
+assert.equal(bridgedReport.boundaryEdges.count, 12);
+assert.equal(bridgedReport.inconsistentWinding.count, 0);
+
 console.log("[OK] mesh diagnostics classify defects deterministically");
