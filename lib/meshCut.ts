@@ -96,8 +96,30 @@ function intersectionSegment(triangle: Triangle, plane: CutPlane, epsilon: numbe
 function capFromSegments(segments: Segment[], plane: CutPlane, epsilon: number): { positive: Triangle[]; negative: Triangle[] } {
   if (segments.length === 0) return { positive: [], negative: [] };
   const vertices: CutPoint3[]=[];
-  const vertexFor=(p:CutPoint3)=>{let i=vertices.findIndex((v)=>samePoint(v,p,epsilon));if(i<0){i=vertices.length;vertices.push(p);}return i;};
-  const edges=segments.map(([a,b])=>[vertexFor(a),vertexFor(b)] as [number,number]);
+  const buckets=new Map<string,number[]>();
+  const cell=(value:number)=>Math.floor(value/epsilon);
+  const bucketKey=(x:number,y:number,z:number)=>`${x}|${y}|${z}`;
+  const vertexFor=(p:CutPoint3)=>{
+    const cx=cell(p[0]),cy=cell(p[1]),cz=cell(p[2]);
+    let match=-1;
+    for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++)for(let dz=-1;dz<=1;dz++){
+      for(const index of buckets.get(bucketKey(cx+dx,cy+dy,cz+dz))??[]){
+        if(samePoint(vertices[index],p,epsilon)&&(match<0||index<match))match=index;
+      }
+    }
+    if(match>=0)return match;
+    const index=vertices.length;vertices.push(p);
+    const key=bucketKey(cx,cy,cz);buckets.set(key,[...(buckets.get(key)??[]),index]);
+    return index;
+  };
+  const edgeMap=new Map<string,[number,number]>();
+  for(const [start,end] of segments){
+    const a=vertexFor(start),b=vertexFor(end);
+    if(a===b)continue;
+    const key=a<b?`${a}|${b}`:`${b}|${a}`;
+    if(!edgeMap.has(key))edgeMap.set(key,[a,b]);
+  }
+  const edges=[...edgeMap.values()];
   const adjacency=new Map<number,number[]>();
   for(const [a,b] of edges){adjacency.set(a,[...(adjacency.get(a)??[]),b]);adjacency.set(b,[...(adjacency.get(b)??[]),a]);}
   if([...adjacency.values()].some((list)=>list.length!==2)) throw new Error("Řez nevytvořil uzavřený obrys pro cap.");
@@ -124,7 +146,24 @@ export function cutMeshByPlane(mesh: StlMesh, rawPlane: CutPlane, options: { cap
   const diagonal=Math.hypot(mesh.bounds.max[0]-mesh.bounds.min[0],mesh.bounds.max[1]-mesh.bounds.min[1],mesh.bounds.max[2]-mesh.bounds.min[2]);
   const epsilon=Math.max(1e-7,diagonal*1e-8), epsilonArea=Math.max(1e-14,diagonal*diagonal*1e-14);
   const positive:Triangle[]=[],negative:Triangle[]=[],segments:Segment[]=[];
-  for(let index=0;index<mesh.triangleCount;index++){const o=index*9;const tri:Triangle=[[mesh.positions[o],mesh.positions[o+1],mesh.positions[o+2]],[mesh.positions[o+3],mesh.positions[o+4],mesh.positions[o+5]],[mesh.positions[o+6],mesh.positions[o+7],mesh.positions[o+8]]];const ds=tri.map((p)=>distance(plane,p));const pos=ds.some((d)=>d>epsilon),neg=ds.some((d)=>d<-epsilon);if(!pos&&!neg){const ab=new THREE.Vector3(...tri[1]).sub(new THREE.Vector3(...tri[0]));const ac=new THREE.Vector3(...tri[2]).sub(new THREE.Vector3(...tri[0]));(new THREE.Vector3().crossVectors(ab,ac).dot(new THREE.Vector3(...plane.normal))>=0?positive:negative).push(tri);continue;}if(pos&&!neg){positive.push(tri);continue;}if(neg&&!pos){negative.push(tri);continue;}positive.push(...triangulateFan(clipPolygon(tri,plane,true,epsilon),epsilonArea));negative.push(...triangulateFan(clipPolygon(tri,plane,false,epsilon),epsilonArea));const segment=intersectionSegment(tri,plane,epsilon);if(segment)segments.push(segment);}
+  for(let index=0;index<mesh.triangleCount;index++){
+    const o=index*9;
+    const tri:Triangle=[[mesh.positions[o],mesh.positions[o+1],mesh.positions[o+2]],[mesh.positions[o+3],mesh.positions[o+4],mesh.positions[o+5]],[mesh.positions[o+6],mesh.positions[o+7],mesh.positions[o+8]]];
+    const ds=tri.map((p)=>distance(plane,p));
+    const pos=ds.some((d)=>d>epsilon),neg=ds.some((d)=>d<-epsilon);
+    if(!pos&&!neg){
+      const ab=new THREE.Vector3(...tri[1]).sub(new THREE.Vector3(...tri[0]));
+      const ac=new THREE.Vector3(...tri[2]).sub(new THREE.Vector3(...tri[0]));
+      (new THREE.Vector3().crossVectors(ab,ac).dot(new THREE.Vector3(...plane.normal))>=0?positive:negative).push(tri);
+      continue;
+    }
+    const segment=intersectionSegment(tri,plane,epsilon);
+    if(segment)segments.push(segment);
+    if(pos&&!neg){positive.push(tri);continue;}
+    if(neg&&!pos){negative.push(tri);continue;}
+    positive.push(...triangulateFan(clipPolygon(tri,plane,true,epsilon),epsilonArea));
+    negative.push(...triangulateFan(clipPolygon(tri,plane,false,epsilon),epsilonArea));
+  }
   if(segments.length===0)throw new Error("Řezná rovina model neprotíná.");
   let capTriangles=0;if(options.cap!==false){const cap=capFromSegments(segments,plane,Math.max(1e-5,diagonal*1e-7));positive.push(...cap.positive);negative.push(...cap.negative);capTriangles=cap.positive.length+cap.negative.length;}
   return {positive:makeMesh(positive),negative:makeMesh(negative),intersectionSegments:segments.length,capTriangles};

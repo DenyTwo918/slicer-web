@@ -767,7 +767,13 @@ export default function Viewport({
           <group
             key={m.id}
             ref={isSel ? gizmoRef : undefined}
-            position={[placement.groupX, placement.groupY, h / 2]}
+            position={[placement.groupX, placement.groupY, h / 2 + m.transform.z]}
+            rotation={[
+              THREE.MathUtils.degToRad(m.transform.rx),
+              THREE.MathUtils.degToRad(m.transform.ry),
+              THREE.MathUtils.degToRad(m.transform.rz),
+            ]}
+            scale={m.transform.scale}
           >
             {/* pivot = střed modelu (rotace/škálování kolem něj) */}
             <group position={[0, 0, -h / 2]}>

@@ -21,6 +21,7 @@ import { createMeshRepairGeneration } from "@/lib/meshRepairGeneration";
 import type { MeshRepairWorkerResponse } from "@/lib/meshRepair.worker";
 import type { CutPlane, MeshCutResult } from "@/lib/meshCut";
 import { createMeshCutGeneration } from "@/lib/meshCutGeneration";
+import { isMeshCutResponseApplicable } from "@/lib/meshCutApplicability";
 import type { MeshCutWorkerResponse } from "@/lib/meshCut.worker";
 import {
   findBestOrientation,
@@ -274,6 +275,13 @@ export default function Home() {
   const pendingCutRef = useRef<{ model: ModelItem; keep: "both" | "positive" | "negative" } | null>(null);
   const analyzedMeshRef = useRef(new Map<number, StlMesh>());
 
+  const invalidatePendingCutForModel = useCallback((modelId: number) => {
+    if (pendingCutRef.current?.model.id !== modelId) return;
+    meshCutGenerationRef.current.invalidate(modelId);
+    pendingCutRef.current = null;
+    setCuttingModel(false);
+  }, []);
+
   /** Central invalidation also makes every in-flight slice/export response stale. */
   const invalidateSlice = useCallback(() => {
     sliceGenerationRef.current.invalidate();
@@ -321,6 +329,12 @@ export default function Home() {
       if (!meshCutGenerationRef.current.isCurrent(response)) return;
       const pending = pendingCutRef.current;
       if (!pending || pending.model.id !== response.modelId) return;
+      const currentModel = modelsRef.current.find((model) => model.id === response.modelId);
+      if (!isMeshCutResponseApplicable(currentModel, pending.model)) {
+        pendingCutRef.current = null;
+        setCuttingModel(false);
+        return;
+      }
       setCuttingModel(false);
       if (!response.ok || !response.result) {
         showToast("err", response.error ?? "Řez modelu selhal.", 9000);
@@ -498,12 +512,13 @@ export default function Home() {
   }, [addModel]);
 
   const clearAll = useCallback(() => {
+    if (pendingCutRef.current) invalidatePendingCutForModel(pendingCutRef.current.model.id);
     modelsRef.current = [];
     setModels([]);
     setSelectedId(null);
     invalidateSlice();
     showToast("ok", "Vše smazáno");
-  }, [invalidateSlice]);
+  }, [invalidateSlice, invalidatePendingCutForModel]);
 
   const [light, setLight] = useState(false);
   useEffect(() => {
@@ -599,13 +614,14 @@ export default function Home() {
   }, [activeMeshIssue, meshAnalysisByModel, selectedId]);
 
   const updateModel = useCallback((id: number, fn: (m: ModelItem) => ModelItem) => {
+    invalidatePendingCutForModel(id);
     setModels((prev) => {
       const next = prev.map((m) => (m.id === id ? fn(m) : m));
       modelsRef.current = next;
       return next;
     });
     invalidateSlice();
-  }, [invalidateSlice]);
+  }, [invalidateSlice, invalidatePendingCutForModel]);
 
   const selectMeshIssue = useCallback((group: MeshIssueGroupKey) => {
     if (selectedId === null) return;
@@ -762,6 +778,7 @@ export default function Home() {
 
   const removeSel = useCallback(() => {
     if (selectedId === null) return;
+    invalidatePendingCutForModel(selectedId);
     setModels((prev) => {
       const next = prev.filter((m) => m.id !== selectedId);
       modelsRef.current = next;
@@ -769,10 +786,11 @@ export default function Home() {
     });
     setSelectedId(null);
     invalidateSlice();
-  }, [selectedId, invalidateSlice]);
+  }, [selectedId, invalidateSlice, invalidatePendingCutForModel]);
 
   const removeModel = useCallback(
     (id: number) => {
+      invalidatePendingCutForModel(id);
       setModels((prev) => {
         const next = prev.filter((m) => m.id !== id);
         modelsRef.current = next;
@@ -781,7 +799,7 @@ export default function Home() {
       if (selectedId === id) setSelectedId(null);
       invalidateSlice();
     },
-    [selectedId, invalidateSlice]
+    [selectedId, invalidateSlice, invalidatePendingCutForModel]
   );
 
   const duplicateSel = useCallback(() => {

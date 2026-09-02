@@ -48,6 +48,13 @@ for (const half of [capped.positive, capped.negative]) {
 }
 assert.ok(capped.capTriangles > 0);
 
+const throughExistingEdges = cutMeshByPlane(source, { normal: [1, 1, 0], constant: -1 });
+for (const half of [throughExistingEdges.positive, throughExistingEdges.negative]) {
+  const report = analyzeMesh(half);
+  assert.equal(report.boundaryEdges.count, 0, "cut through existing mesh edges still creates a closed cap");
+  assert.equal(report.inconsistentWinding.count, 0);
+}
+
 assert.throws(
   () => cutMeshByPlane(source, { normal: [1, 0, 0], constant: -2 }, { cap: false }),
   /neprotíná/i,
