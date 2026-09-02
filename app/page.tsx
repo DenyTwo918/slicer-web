@@ -19,6 +19,9 @@ import {
 } from "@/lib/meshRepairModelState";
 import { createMeshRepairGeneration } from "@/lib/meshRepairGeneration";
 import type { MeshRepairWorkerResponse } from "@/lib/meshRepair.worker";
+import type { CutPlane, MeshCutResult } from "@/lib/meshCut";
+import { createMeshCutGeneration } from "@/lib/meshCutGeneration";
+import type { MeshCutWorkerResponse } from "@/lib/meshCut.worker";
 import {
   findBestOrientation,
   meshStats,
@@ -71,6 +74,10 @@ interface ModelItem extends RepairableModel<ModelTransform> {
   mesh: StlMesh; // aktuální data (rotace/scale aplikované)
   original: StlMesh;
   transform: ModelTransform; // pozice na desce
+  cutBackup?: {
+    transactionId: number;
+    original: { id: number; name: string; mesh: StlMesh; original: StlMesh; transform: ModelTransform };
+  };
 }
 
 type MeshIssueGroupKey =
@@ -169,6 +176,7 @@ const SLOT_OFFSETS: [number, number][] = [
 ];
 
 let nextId = 1;
+let nextCutTransactionId = 1;
 
 /** Akordeon sekce levé navigace. */
 function SideSec({
@@ -237,6 +245,12 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [openSec, setOpenSec] = useState<string>("model");
   const [gizmoMode, setGizmoMode] = useState<"translate" | "rotate" | "scale">("translate");
+  const [cutMode, setCutMode] = useState(false);
+  const [cutPlane, setCutPlane] = useState<CutPlane | null>(null);
+  const [cutGizmoMode, setCutGizmoMode] = useState<"translate" | "rotate">("translate");
+  const [cutKeep, setCutKeep] = useState<"both" | "positive" | "negative">("both");
+  const [cutCap, setCutCap] = useState(true);
+  const [cuttingModel, setCuttingModel] = useState(false);
   const [meshAnalysisByModel, setMeshAnalysisByModel] = useState<Record<number, MeshAnalysisEntry>>({});
   const [activeMeshIssue, setActiveMeshIssue] = useState<{
     modelId: number;
@@ -255,6 +269,9 @@ export default function Home() {
   const sliceGenerationRef = useRef(createSliceGeneration());
   const meshRepairWorkerRef = useRef<Worker | null>(null);
   const meshRepairGenerationRef = useRef(createMeshRepairGeneration());
+  const meshCutWorkerRef = useRef<Worker | null>(null);
+  const meshCutGenerationRef = useRef(createMeshCutGeneration());
+  const pendingCutRef = useRef<{ model: ModelItem; keep: "both" | "positive" | "negative" } | null>(null);
   const analyzedMeshRef = useRef(new Map<number, StlMesh>());
 
   /** Central invalidation also makes every in-flight slice/export response stale. */
@@ -284,6 +301,9 @@ export default function Home() {
     sliceWorkerRef.current?.terminate();
     sliceWorkerRef.current = null;
     meshRepairGenerationRef.current.clear();
+    meshCutGenerationRef.current.clear();
+    meshCutWorkerRef.current?.terminate();
+    meshCutWorkerRef.current = null;
     analyzedMeshRef.current.clear();
   }, []);
 
@@ -292,6 +312,63 @@ export default function Home() {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), ms);
   };
+
+  useEffect(() => {
+    const worker = new Worker(new URL("../lib/meshCut.worker.ts", import.meta.url));
+    meshCutWorkerRef.current = worker;
+    worker.onmessage = (event: MessageEvent<MeshCutWorkerResponse>) => {
+      const response = event.data;
+      if (!meshCutGenerationRef.current.isCurrent(response)) return;
+      const pending = pendingCutRef.current;
+      if (!pending || pending.model.id !== response.modelId) return;
+      setCuttingModel(false);
+      if (!response.ok || !response.result) {
+        showToast("err", response.error ?? "Řez modelu selhal.", 9000);
+        return;
+      }
+      const { model, keep } = pending;
+      const result = response.result;
+      const transactionId = nextCutTransactionId++;
+      const backup = {
+        transactionId,
+        original: {
+          id: model.id, name: model.name, mesh: model.mesh, original: model.original,
+          transform: { ...model.transform },
+        },
+      };
+      const makePart = (mesh: StlMesh, side: string, id: number): ModelItem => ({
+        ...model,
+        id,
+        name: `${model.name} — ${side}`,
+        mesh,
+        original: mesh,
+        transform: { ...model.transform },
+        repairBackup: undefined,
+        cutBackup: backup,
+      });
+      const parts = keep === "positive"
+        ? [makePart(result.positive, "strana +", model.id)]
+        : keep === "negative"
+          ? [makePart(result.negative, "strana −", model.id)]
+          : [makePart(result.positive, "strana +", model.id), makePart(result.negative, "strana −", nextId++)];
+      setModels((previous) => {
+        const next = previous.flatMap((item) => item.id === model.id ? parts : [item]);
+        modelsRef.current = next;
+        return next;
+      });
+      setSelectedId(parts[0].id);
+      setCutMode(false);
+      setCutPlane(null);
+      pendingCutRef.current = null;
+      invalidateSlice();
+      showToast("ok", `Model rozříznut ✓ · ${parts.length} částí · cap ${result.capTriangles / 2} ploch/stranu`, 9000);
+    };
+    worker.onerror = () => {
+      setCuttingModel(false);
+      showToast("err", "Worker řezu modelu selhal.", 9000);
+    };
+    return () => { worker.terminate(); if (meshCutWorkerRef.current === worker) meshCutWorkerRef.current = null; };
+  }, [invalidateSlice]);
 
   useEffect(() => {
     const worker = new Worker(new URL("../lib/meshRepair.worker.ts", import.meta.url));
@@ -602,8 +679,59 @@ export default function Home() {
     [selectedId, updateModel]
   );
 
+  const beginCut = useCallback(() => {
+    if (!selected) return;
+    const centerZ = (selected.mesh.bounds.min[2] + selected.mesh.bounds.max[2]) / 2;
+    setCutPlane({ normal: [0, 0, 1], constant: -centerZ });
+    setCutKeep("both");
+    setCutCap(true);
+    setCutMode(true);
+    setCutGizmoMode("translate");
+    setOpenSec("cut");
+  }, [selected]);
+
+  const setCutAxis = useCallback((axis: "x" | "y" | "z") => {
+    if (!selected) return;
+    const index = axis === "x" ? 0 : axis === "y" ? 1 : 2;
+    const normal: [number, number, number] = [0, 0, 0]; normal[index] = 1;
+    const center = (selected.mesh.bounds.min[index] + selected.mesh.bounds.max[index]) / 2;
+    setCutPlane({ normal, constant: -center });
+  }, [selected]);
+
+  const cancelCut = useCallback(() => {
+    if (selectedId !== null) meshCutGenerationRef.current.invalidate(selectedId);
+    pendingCutRef.current = null;
+    setCuttingModel(false);
+    setCutMode(false);
+    setCutPlane(null);
+  }, [selectedId]);
+
+  const commitCut = useCallback(() => {
+    if (!selected || !cutPlane || !meshCutWorkerRef.current) return;
+    const token = meshCutGenerationRef.current.next(selected.id);
+    pendingCutRef.current = { model: selected, keep: cutKeep };
+    setCuttingModel(true);
+    meshCutWorkerRef.current.postMessage({ ...token, mesh: selected.mesh, plane: cutPlane, cap: cutCap });
+  }, [selected, cutPlane, cutKeep, cutCap]);
+
   const resetSel = useCallback(() => {
     if (!selectedId) return;
+    const item = models.find((model) => model.id === selectedId);
+    if (item?.cutBackup) {
+      const { transactionId, original } = item.cutBackup;
+      setModels((previous) => {
+        const firstIndex = previous.findIndex((model) => model.cutBackup?.transactionId === transactionId);
+        const restored: ModelItem = { ...original, transform: { ...original.transform } };
+        const remaining = previous.filter((model) => model.cutBackup?.transactionId !== transactionId);
+        remaining.splice(Math.max(0, firstIndex), 0, restored);
+        modelsRef.current = remaining;
+        return remaining;
+      });
+      setSelectedId(original.id);
+      invalidateSlice();
+      showToast("ok", "Řez vrácen ✓");
+      return;
+    }
     updateModel(selectedId, (m) => m.repairBackup
       ? restoreRepairBackup(m)
       : {
@@ -611,7 +739,7 @@ export default function Home() {
           mesh: m.original,
           transform: { ...DEFAULT_TRANSFORM },
         });
-  }, [selectedId, updateModel]);
+  }, [selectedId, models, updateModel, invalidateSlice]);
 
   const orientSel = useCallback(() => {
     if (!selectedId) return;
@@ -1460,6 +1588,9 @@ const doSlice = useCallback(async () => {
             gizmoMode={gizmoMode}
             supportPreview={supportPreview}
             meshDiagnostic={activeMeshDiagnostic}
+            cutPreview={cutMode && cutPlane && selectedId !== null ? { modelId:selectedId, plane:cutPlane } : null}
+            cutGizmoMode={cutGizmoMode}
+            onCutPlaneChange={setCutPlane}
           />
         </div>
 
@@ -1519,6 +1650,7 @@ const doSlice = useCallback(async () => {
               <button className="mp-btn" onClick={resetSel}>Vrať</button>
               <button className="mp-btn" onClick={duplicateSel}>Duplikovat</button>
               <button className="mp-btn" onClick={splitSel}>Rozdělit části</button>
+              <button className="mp-btn" onClick={beginCut} disabled={!selected || cuttingModel}>Planar Cut</button>
               <button className="mp-btn" onClick={centerSel}>Centrovat</button>
               <button className="mp-btn mp-danger" onClick={removeSel}>Smaž</button>
             </div>
@@ -1532,6 +1664,27 @@ const doSlice = useCallback(async () => {
                 <button className="mp-btn" onClick={arrangeAll}>Rozmístit</button>
               )}
             </div>
+          </SideSec>
+
+          <SideSec label="Planar Cut" open={openSec === "cut"} onToggle={() => setOpenSec(openSec === "cut" ? "" : "cut")}>
+            {!cutMode ? <button className="btn btn-small btn-primary" onClick={beginCut} disabled={!selected}>Zahájit řez</button> : <>
+              <div className="mp-row">
+                <button className="mp-btn" onClick={()=>setCutAxis("x")}>Rovina X</button>
+                <button className="mp-btn" onClick={()=>setCutAxis("y")}>Rovina Y</button>
+                <button className="mp-btn" onClick={()=>setCutAxis("z")}>Rovina Z</button>
+              </div>
+              <div className="mp-row">
+                <button className={`mp-btn ${cutGizmoMode==="translate"?"active":""}`} onClick={()=>setCutGizmoMode("translate")}>Posun roviny</button>
+                <button className={`mp-btn ${cutGizmoMode==="rotate"?"active":""}`} onClick={()=>setCutGizmoMode("rotate")}>Otočení roviny</button>
+              </div>
+              <label className="set-row"><span>Výstup</span><select value={cutKeep} onChange={(event)=>setCutKeep(event.target.value as typeof cutKeep)}><option value="both">Obě části</option><option value="positive">Strana normály (+)</option><option value="negative">Opačná strana (−)</option></select></label>
+              <label className="set-row check"><input type="checkbox" checked={cutCap} onChange={(event)=>setCutCap(event.target.checked)}/><span>Uzavřít řez (cap)</span></label>
+              <p className="mp-hint">Modrá = strana normály, oranžová = opačná. Řez je přesný, bez voxelů.</p>
+              <div className="mp-row">
+                <button className="btn btn-small btn-primary" onClick={commitCut} disabled={cuttingModel}>{cuttingModel?"Počítám řez…":"Rozříznout"}</button>
+                <button className="mp-btn" onClick={cancelCut} disabled={cuttingModel}>Zrušit</button>
+              </div>
+            </>}
           </SideSec>
 
           <SideSec

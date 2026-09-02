@@ -28,6 +28,8 @@ import { buildViewportModelGeometry } from "@/lib/viewportGeometry";
 import { buildMeshRepairOverlay } from "@/lib/meshRepairOverlay";
 import { shouldShowMeshDiagnosticOverlay } from "@/lib/meshDiagnosticVisibility";
 import type { MeshIssueSample } from "@/lib/meshRepair";
+import type { CutPlane } from "@/lib/meshCut";
+import { localPlaneToWorld, worldPlaneToLocal } from "@/lib/meshCutPlane";
 
 interface ViewModel {
   id: number;
@@ -520,6 +522,29 @@ function Model({
   );
 }
 
+function CutPreviewModel({ mesh, geometryOffset, plane }: { mesh: StlMesh; geometryOffset:{x:number;y:number}; plane:THREE.Plane }) {
+  const geometry=useMemo(()=>buildViewportModelGeometry(mesh,geometryOffset),[mesh,geometryOffset.x,geometryOffset.y]);
+  useEffect(()=>()=>geometry.dispose(),[geometry]);
+  const opposite=useMemo(()=>plane.clone().negate(),[plane]);
+  return <>
+    <mesh geometry={geometry}><meshStandardMaterial color="#3b82f6" side={THREE.DoubleSide} clippingPlanes={[plane]} roughness={0.38}/></mesh>
+    <mesh geometry={geometry}><meshStandardMaterial color="#f59e0b" side={THREE.DoubleSide} clippingPlanes={[opposite]} roughness={0.38}/></mesh>
+  </>;
+}
+
+function CutPlaneGizmo({plane,mode,onChange,onDrag}:{plane:THREE.Plane;mode:"translate"|"rotate";onChange:(plane:THREE.Plane)=>void;onDrag:(active:boolean)=>void}){
+  const ref=useRef<THREE.Group>(null);
+  useEffect(()=>{const group=ref.current;if(!group)return;const normal=plane.normal.clone().normalize();group.position.copy(normal).multiplyScalar(-plane.constant);group.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),normal);},[plane]);
+  const emit=()=>{const group=ref.current;if(!group)return;const normal=new THREE.Vector3(0,0,1).applyQuaternion(group.quaternion).normalize();onChange(new THREE.Plane(normal,-normal.dot(group.position)));};
+  return <>
+    <group ref={ref}>
+      <mesh renderOrder={30}><planeGeometry args={[140,140]}/><meshBasicMaterial color="#22d3ee" transparent opacity={0.16} side={THREE.DoubleSide} depthWrite={false}/></mesh>
+      <lineSegments renderOrder={31}><edgesGeometry args={[new THREE.PlaneGeometry(140,140)]}/><lineBasicMaterial color="#67e8f9" depthTest={false}/></lineSegments>
+    </group>
+    <TransformControls object={ref as any} mode={mode} size={0.85} onObjectChange={emit} onMouseDown={()=>onDrag(true)} onMouseUp={()=>{emit();onDrag(false);}}/>
+  </>;
+}
+
 /** Tisková deska — jemný grid ohraničený na plochu tisku (ostré linky, žádné fade přes vanu). */
 function BuildPlate({ printer }: { printer: PrinterProfile }) {
   return (
@@ -629,6 +654,9 @@ export default function Viewport({
   gizmoMode = "translate",
   supportPreview,
   meshDiagnostic,
+  cutPreview,
+  cutGizmoMode = "translate",
+  onCutPlaneChange,
 }: {
   models: ViewModel[];
   selectedId: number | null;
@@ -639,11 +667,17 @@ export default function Viewport({
   gizmoMode?: "translate" | "rotate" | "scale";
   supportPreview?: SupportPreviewData | null;
   meshDiagnostic?: { modelId: number; sample: MeshIssueSample } | null;
+  cutPreview?: { modelId:number; plane:CutPlane } | null;
+  cutGizmoMode?: "translate"|"rotate";
+  onCutPlaneChange?: (plane:CutPlane)=>void;
 }) {
   const gizmoRef = useRef<THREE.Group>(null);
   const orbitRef = useRef<any>(null);
   const [orbitEnabled, setOrbitEnabled] = useState(true);
   const rad2deg = (r: number) => (r * 180) / Math.PI;
+  const cutModel=cutPreview?models.find((model)=>model.id===cutPreview.modelId):undefined;
+  const cutWorld=useMemo(()=>cutPreview&&cutModel?localPlaneToWorld(cutPreview.plane,cutModel.mesh.bounds,cutModel.transform):null,[cutPreview,cutModel]);
+  const cutThreePlane=useMemo(()=>cutWorld?new THREE.Plane(new THREE.Vector3(...cutWorld.normal),cutWorld.constant):null,[cutWorld]);
 
   // model se skutečně ořízne na aktuální vrstvě; horní část se nevykresluje
   const clipPlane = useMemo(
@@ -737,12 +771,11 @@ export default function Viewport({
           >
             {/* pivot = střed modelu (rotace/škálování kolem něj) */}
             <group position={[0, 0, -h / 2]}>
-              <Model
-                mesh={m.mesh}
-                color={color}
-                clipPlane={clipPlane}
-                geometryOffset={{ x: placement.geometryX, y: placement.geometryY }}
-              />
+              {cutThreePlane && cutPreview?.modelId===m.id ? (
+                <CutPreviewModel mesh={m.mesh} geometryOffset={{x:placement.geometryX,y:placement.geometryY}} plane={cutThreePlane}/>
+              ) : (
+                <Model mesh={m.mesh} color={color} clipPlane={clipPlane} geometryOffset={{ x: placement.geometryX, y: placement.geometryY }}/>
+              )}
               {meshDiagnostic && shouldShowMeshDiagnosticOverlay({
                 modelId: m.id,
                 diagnosticModelId: meshDiagnostic.modelId,
@@ -768,7 +801,11 @@ export default function Viewport({
         resolution={512}
       />
 
-      {selectedId !== null && !layerPreview && (
+      {cutThreePlane && cutModel && onCutPlaneChange && (
+        <CutPlaneGizmo plane={cutThreePlane} mode={cutGizmoMode} onDrag={(active)=>setOrbitEnabled(!active)} onChange={(world)=>onCutPlaneChange(worldPlaneToLocal({normal:world.normal.toArray() as [number,number,number],constant:world.constant},cutModel.mesh.bounds,cutModel.transform))}/>
+      )}
+
+      {selectedId !== null && !layerPreview && !cutPreview && (
         <TransformControls
           object={gizmoRef as any}
           mode={gizmoMode}
